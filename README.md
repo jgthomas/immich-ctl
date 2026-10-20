@@ -16,13 +16,13 @@ Report photos and videos by capture year and album, plus metadata-to-file covera
 Supply all ZIP parts from **one person's export** together:
 
 ```bash
-./immich-describe-takeout ~/Downloads/takeout-20261018T153319Z-1-*.zip
+./immich-describe-takeout ~/Downloads/takeout-EXPORT-*.zip
 
 # List unresolved metadata and unpaired files:
-./immich-describe-takeout --details ~/Downloads/takeout-20261018T153319Z-1-*.zip
+./immich-describe-takeout --details ~/Downloads/takeout-EXPORT-*.zip
 
 # Save the report:
-./immich-describe-takeout ~/Downloads/takeout-20261018T153319Z-1-*.zip > takeout-report.txt
+./immich-describe-takeout ~/Downloads/takeout-EXPORT-*.zip > takeout-report.txt
 ```
 
 The script reads filenames and JSON without extracting or modifying the archive.
