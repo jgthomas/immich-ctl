@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "immich-ctl"
+version = "0.1.0"
+description = "Standalone utilities for managing a PixelUnion Immich library"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff==0.14.1"]
+
+[tool.setuptools]
+packages = []
+script-files = ["immich-ping", "immich-describe-takeout"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Include the executable Python scripts, which deliberately have no .py suffix.
+extend-include = ["immich-ping", "immich-describe-takeout"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]

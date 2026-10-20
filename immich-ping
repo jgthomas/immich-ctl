@@ -5,8 +5,9 @@ import argparse
 import configparser
 import json
 import math
-from pathlib import Path
 import sys
+from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -22,7 +23,8 @@ class NoRedirects(HTTPRedirectHandler):
         return None
 
 
-def load_config(path):
+def load_config(path: Path) -> tuple[str, str]:
+    """Read account credentials and return the account endpoint and API key."""
     config = configparser.ConfigParser(interpolation=None)
     try:
         with path.open(encoding="utf-8") as stream:
@@ -33,18 +35,28 @@ def load_config(path):
         raise PingError("Cannot read the config file; check its path and permissions.") from None
     except (configparser.Error, UnicodeError):
         # Parser errors can quote lines containing the secret.
-        raise PingError("Invalid config: expected [immich] with server and api_key entries.") from None
+        raise PingError(
+            "Invalid config: expected [immich] with server and api_key entries."
+        ) from None
     if not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
         raise PingError("api_key must be a non-empty value without spaces or control characters.")
     try:
         url = urlsplit(server)
         _ = url.port  # Validate malformed ports too.
-        if (url.scheme not in {"https", "http"} or not url.hostname or
-                url.username is not None or url.password is not None or
-                url.query or url.fragment or any(c.isspace() for c in server)):
+        if (
+            url.scheme not in {"https", "http"}
+            or not url.hostname
+            or url.username is not None
+            or url.password is not None
+            or url.query
+            or url.fragment
+            or any(c.isspace() for c in server)
+        ):
             raise ValueError()
     except ValueError:
-        raise PingError("server must be an HTTP(S) URL without credentials, query or fragment.") from None
+        raise PingError(
+            "server must be an HTTP(S) URL without credentials, query or fragment."
+        ) from None
     root = url.path.rstrip("/")
     if not root.endswith("/api"):
         root += "/api"
@@ -52,8 +64,11 @@ def load_config(path):
     return endpoint, key
 
 
-def get_current_user(endpoint, key, timeout):
-    request = Request(endpoint, headers={"x-api-key": key, "Accept": "application/json"}, method="GET")
+def get_current_user(endpoint: str, key: str, timeout: float) -> dict[str, Any]:
+    """Fetch the account owning the key without modifying the server."""
+    request = Request(
+        endpoint, headers={"x-api-key": key, "Accept": "application/json"}, method="GET"
+    )
     try:
         with build_opener(NoRedirects()).open(request, timeout=timeout) as response:
             if response.status != 200:
@@ -68,12 +83,15 @@ def get_current_user(endpoint, key, timeout):
             404: "API endpoint not found (HTTP 404); check the server URL.",
         }
         if 300 <= status < 400:
-            raise PingError("Server redirected the request; set server to the final Immich URL. "
-                            "The API key was not forwarded.") from None
+            raise PingError(
+                "Server redirected the request; set server to the final Immich URL. "
+                "The API key was not forwarded."
+            ) from None
         raise PingError(messages.get(status, f"Server returned HTTP {status}.")) from None
     except (URLError, OSError, ValueError):
-        raise PingError("Connection failed; check the URL, network and TLS certificate, "
-                        "or increase --timeout.") from None
+        raise PingError(
+            "Connection failed; check the URL, network and TLS certificate, or increase --timeout."
+        ) from None
     if len(payload) > 1024 * 1024:
         raise PingError("Unexpected response: account JSON exceeds 1 MiB.")
     try:
@@ -85,10 +103,14 @@ def get_current_user(endpoint, key, timeout):
     return user
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, type=Path, metavar="FILE", help="Account INI file")
-    parser.add_argument("--timeout", type=float, default=15, metavar="SECONDS", help="Request timeout (default: 15)")
+    parser.add_argument(
+        "--config", required=True, type=Path, metavar="FILE", help="Account INI file"
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=15, metavar="SECONDS", help="Request timeout (default: 15)"
+    )
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("--timeout must be a positive finite number")
@@ -100,9 +122,11 @@ def main(argv=None):
         return 1
     except KeyboardInterrupt:
         return 130
-    def safe(value):
+
+    def safe(value: object) -> str:
         # Quote remote strings and redact even an accidentally echoed API key.
         return json.dumps(str(value).replace(key, "[REDACTED]"), ensure_ascii=True)
+
     print("OK: credentials loaded and authenticated read-only request succeeded.")
     for label, field in (("Account", "name"), ("Email", "email"), ("User ID", "id")):
         if user.get(field):

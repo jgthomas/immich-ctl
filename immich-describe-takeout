@@ -2,20 +2,34 @@
 """Describe Google Photos Takeout ZIPs without extracting or modifying them."""
 
 import argparse
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-import re
-import sys
-import zipfile
 import json
+import re
+import zipfile
+from collections import Counter, defaultdict
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any, TypeAlias
+
+ItemIdentity: TypeAlias = tuple[str, str] | tuple[str, str, int, int]
+Items: TypeAlias = dict[ItemIdentity, tuple[str, str]]
+Inspection: TypeAlias = tuple[
+    Items,
+    dict[str, set[ItemIdentity]],
+    dict[str, str],
+    Counter[str],
+    Counter[str],
+    int,
+]
 
 
-PHOTO_EXTENSIONS = set("jpg jpeg heic heif png gif webp avif bmp tif tiff dng raw cr2 cr3 nef arw raf orf rw2 pef srw".split())
+PHOTO_EXTENSIONS = set(
+    "jpg jpeg heic heif png gif webp avif bmp tif tiff dng raw cr2 cr3 nef arw raf orf rw2 pef srw".split()
+)
 VIDEO_EXTENSIONS = set("mp4 mov m4v avi mpg mpeg 3gp 3g2 mts m2ts mkv webm wmv mod tod".split())
 
 
-def media_type(name):
+def media_type(name: str) -> str:
     extension = PurePosixPath(name).suffix.lower().lstrip(".")
     if extension in PHOTO_EXTENSIONS:
         return "Photos"
@@ -24,17 +38,18 @@ def media_type(name):
     return "Other"
 
 
-def capture_year(data):
+def capture_year(data: dict[str, Any]) -> str:
     try:
         timestamp = data["photoTakenTime"]["timestamp"]
-        return str(datetime.fromtimestamp(int(timestamp), timezone.utc).year)
+        return str(datetime.fromtimestamp(int(timestamp), UTC).year)
     except (KeyError, TypeError, ValueError, OverflowError, OSError):
         return "Unknown"
 
 
-def inspect_archives(paths):
-    items = {}
-    memberships = defaultdict(set)
+def inspect_archives(paths: list[Path]) -> Inspection:
+    """Collect metadata items, album membership and file counts across ZIP parts."""
+    items: Items = {}
+    memberships: defaultdict[str, set[ItemIdentity]] = defaultdict(set)
     album_titles = {}
     raw_files = Counter()
     warnings = Counter()
@@ -56,7 +71,7 @@ def inspect_archives(paths):
                 if entry.is_dir() or "Google Photos" not in parts:
                     continue
                 # Only inspect files below Takeout's Google Photos directory.
-                relative = PurePosixPath(*parts[parts.index("Google Photos") + 1:])
+                relative = PurePosixPath(*parts[parts.index("Google Photos") + 1 :])
                 directory = str(relative.parent)
                 # Split exports can repeat a path; keep differing contents visible.
                 entry_key = (str(relative), entry.CRC, entry.file_size)
@@ -83,7 +98,7 @@ def inspect_archives(paths):
                 if relative.name == "metadata.json" and "photoTakenTime" not in data:
                     title = data.get("title")
                     album_titles[directory] = title if isinstance(title, str) else directory
-                    memberships[directory]  # Include empty albums.
+                    memberships.setdefault(directory, set())  # Include empty albums.
                     continue
                 if not any(key in data for key in ("photoTakenTime", "creationTime", "url")):
                     warnings["Unrecognised JSON files (skipped)"] += 1
@@ -102,8 +117,11 @@ def inspect_archives(paths):
                     candidates = set()
                     for stem in (title, base):
                         if isinstance(stem, str):
-                            candidates.update(file_types.get(
-                                (str(PurePosixPath(entry.filename).parent), stem), set()))
+                            candidates.update(
+                                file_types.get(
+                                    (str(PurePosixPath(entry.filename).parent), stem), set()
+                                )
+                            )
                     if len(candidates) == 1:
                         kind = candidates.pop()
                 year = capture_year(data)
@@ -116,29 +134,33 @@ def inspect_archives(paths):
     return items, memberships, album_titles, raw_files, warnings, sidecars
 
 
-def counts(identities, items):
+def counts(identities: Iterable[ItemIdentity], items: Items) -> Counter[str]:
     return Counter(items[identity][1] for identity in identities)
 
 
-def print_table(label, rows):
+def print_table(label: str, rows: Iterable[tuple[str, Counter[str]]]) -> None:
     rows = [(str(name), tally) for name, tally in rows]
     # Escape control characters so album names cannot alter the terminal output.
-    rows = [("".join(c if c.isprintable() else repr(c)[1:-1] for c in name), tally)
-            for name, tally in rows]
+    rows = [
+        ("".join(c if c.isprintable() else repr(c)[1:-1] for c in name), tally)
+        for name, tally in rows
+    ]
     width = max([len(label)] + [len(name) for name, _ in rows])
     print(f"{label:<{width}}  {'Photos':>8}  {'Videos':>8}  {'Other':>8}  {'Total':>8}")
     for name, tally in rows:
-        print(f"{name:<{width}}  {tally['Photos']:>8,}  {tally['Videos']:>8,}  "
-              f"{tally['Other']:>8,}  {sum(tally.values()):>8,}")
+        print(
+            f"{name:<{width}}  {tally['Photos']:>8,}  {tally['Videos']:>8,}  "
+            f"{tally['Other']:>8,}  {sum(tally.values()):>8,}"
+        )
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog="Pass all ZIP parts from ONE person's export together. Requires Python 3 only.",
     )
     parser.add_argument("archives", nargs="+", type=Path, metavar="ZIP")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     paths = list(dict.fromkeys(path.expanduser().resolve() for path in args.archives))
     try:
         items, memberships, titles, raw, warnings, sidecars = inspect_archives(paths)
@@ -163,10 +185,16 @@ def main():
     print_table("", [("TOTAL", counts(items, items))])
 
     # A folder with album metadata is an album even if its name resembles a year folder.
-    albums = {directory for directory in memberships
-              if directory in titles or (directory != "." and
-                 directory not in {"Archive", "Trash", "Failed videos"} and
-                 not re.fullmatch(r"Photos from \d{4}", directory))}
+    albums = {
+        directory
+        for directory in memberships
+        if directory in titles
+        or (
+            directory != "."
+            and directory not in {"Archive", "Trash", "Failed videos"}
+            and not re.fullmatch(r"Photos from \d{4}", directory)
+        )
+    }
     title_counts = Counter(titles.get(directory, directory) for directory in albums)
     rows = []
     for directory in albums:
