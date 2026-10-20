@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Query, extract or upload a date selection from one person's Takeout ZIPs."""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from datetime import UTC, date, datetime
+from pathlib import Path
+from uuid import uuid4
+
+from immich_ctl.config import ConfigError, load_config
+from immich_ctl.takeout import counts, inspect_archives, print_table
+
+
+class TakeoutError(Exception):
+    pass
+
+
+def date_selection(value: str) -> tuple[date, date]:
+    """Expand years, months or ISO days into an inclusive range."""
+
+    def period(text: str) -> tuple[date, date]:
+        if re.fullmatch(r"\d{4}", text):
+            year = int(text)
+            return date(year, 1, 1), date(year, 12, 31)
+        if re.fullmatch(r"\d{4}-\d{2}", text):
+            import calendar
+
+            year, month = map(int, text.split("-"))
+            return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            day = date.fromisoformat(text)
+            return day, day
+        raise ValueError()
+
+    try:
+        parts = value.split(",")
+        if len(parts) not in (1, 2):
+            raise ValueError()
+        start = period(parts[0].strip())[0]
+        end = period(parts[-1].strip())[1]
+        if start > end:
+            raise ValueError()
+        return start, end
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "Use YYYY, YYYY-MM, YYYY-MM-DD, or START,END in ascending order."
+        ) from None
+
+
+def query(paths: list[Path], selection: tuple[date, date], list_items: bool = False) -> None:
+    items, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
+    if not items:
+        raise TakeoutError("No Google Photos media JSON found in the supplied ZIPs.")
+    start, end = selection
+    selected = {
+        identity
+        for identity, times in coverage.capture_times.items()
+        if len(times) == 1 and start <= next(iter(times)).date() <= end
+    }
+    print(f"Capture dates (UTC, inclusive): {start.isoformat()} to {end.isoformat()}")
+    print(f"Selected metadata items: {len(selected):,} of {len(items):,}")
+    print("Metadata counts use Google Photos IDs; file availability is reported separately.")
+    print_table("Selection", [("TOTAL", counts(selected, items))])
+    print(f"With a confirmed media filename match: {len(selected & coverage.matched_items):,}")
+    print(f"With only ambiguous matches: {len(selected & coverage.ambiguous_items):,}")
+    print(f"Without a media filename match: {len(selected & coverage.missing_items):,}")
+    missing_dates = sum(not times for times in coverage.capture_times.values())
+    conflicts = sum(len(times) > 1 for times in coverage.capture_times.values())
+    print(
+        f"Excluded across export: {missing_dates:,} unknown dates; {conflicts:,} conflicting dates."
+    )
+    print("\nAlbums containing selected metadata items")
+    print_table(
+        "Album (folder)",
+        [
+            (f"{title} ({directory})", counts(selected & memberships[directory], items))
+            for directory, title in sorted(titles.items())
+            if selected & memberships[directory]
+        ],
+    )
+    if list_items:
+        print("\nSelected items: UTC timestamp followed by JSON-quoted sidecar paths")
+        for identity in sorted(selected, key=lambda key: (min(coverage.capture_times[key]), key)):
+            captured = next(iter(coverage.capture_times[identity]))
+            print(captured.isoformat(), json.dumps(sorted(coverage.item_paths[identity])))
+    if warnings:
+        print("\nInspection warnings")
+        for message, number in sorted(warnings.items()):
+            print(f"  {message}: {number:,}")
+    print("\nThis query includes all metadata states, including partner/trashed items.")
+    print("immich-go applies its own matching, deduplication and status filters when processing.")
+
+
+def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
+    binary = shutil.which("immich-go")
+    if binary is None:
+        raise TakeoutError("immich-go was not found on PATH (tested with version 0.32.0).")
+    start, end = args.date_range
+    operation = "upload" if args.action == "upload" else "archive"
+    credentials = {}
+    if args.action == "upload":
+        server, key = load_config(args.config.expanduser())
+        # The shared loader returns an API base; immich-go appends /api itself.
+        credentials = {"upload": {"server": server.removesuffix("/api"), "api-key": key}}
+    else:
+        destination = args.output.expanduser().resolve()
+        if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+            raise TakeoutError("Extraction requires a new or empty --output directory.")
+
+    log = args.log_file
+    if log is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        log = Path("logs") / f"takeout-{args.action}-{stamp}-{uuid4().hex[:8]}.log"
+    log = log.expanduser().resolve()
+    if log in paths or (args.action == "upload" and log == args.config.expanduser().resolve()):
+        raise TakeoutError("The log path must be separate from archives and account config.")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    # Reserve a private new file; never overwrite a previous run's log.
+    with log.open("x", encoding="utf-8"):
+        log.chmod(0o600)
+    print(f"Log: {json.dumps(str(log))}", flush=True)
+    # Explicit config and a clean IMMICH_GO environment prevent inherited options
+    # (such as overwrite or save-config) from silently changing this operation.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("IMMICH_GO_")}
+    env["TZ"] = "UTC"
+    with tempfile.TemporaryDirectory(prefix="immich-ctl-") as temporary:
+        config = Path(temporary) / "immich-go.json"
+        with config.open("x", encoding="utf-8") as stream:
+            config.chmod(0o600)
+            json.dump(credentials, stream)
+        command = [
+            binary,
+            operation,
+            "from-google-photos",
+            "--config",
+            str(config),
+            "--date-range",
+            f"{start.isoformat()},{end.isoformat()}",
+            "--include-partner=" + str(args.include_partner).lower(),
+            "--include-archived=true",
+            "--include-trashed=false",
+            "--include-unmatched=false",
+            "--sync-albums=true",
+            "--save-config=false",
+            "--on-errors=stop",
+            "--log-type=JSON",
+            "--log-level=INFO",
+            "--log-file",
+            str(log),
+        ]
+        if args.action == "upload":
+            command += [
+                "--overwrite=false",
+                "--pause-immich-jobs=false",
+                "--api-trace=false",
+                "--skip-verify-ssl=false",
+                "--no-ui",
+                "--time-zone=UTC",
+                "--dry-run=" + str(args.dry_run).lower(),
+            ]
+        else:
+            command += ["--write-to-folder", str(destination)]
+        command += ["--", *(str(path) for path in paths)]
+        # Never print the credentials or put the API key in the process arguments.
+        result = subprocess.run(command, env=env, check=False)
+    if result.returncode:
+        print(f"immich-go failed; inspect {json.dumps(str(log))}.", file=sys.stderr)
+    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="action", required=True)
+    for name, help_text in (
+        ("query", "Read-only metadata counts, albums and optional item list"),
+        ("extract", "Create an organised local archive with generated JSON metadata"),
+        ("upload", "Upload directly from the ZIPs using immich-go"),
+    ):
+        sub = commands.add_parser(name, help=help_text)
+        sub.add_argument("archives", nargs="+", type=Path, metavar="ZIP")
+        sub.add_argument(
+            "--date-range",
+            required=True,
+            type=date_selection,
+            metavar="DATES",
+            help="Year, month, day, or inclusive range: 2022; 2022-07-15; 2020,2022",
+        )
+        if name == "query":
+            sub.add_argument("--list", dest="list_items", action="store_true", help="List sidecars")
+        else:
+            sub.add_argument("--dry-run", action="store_true", help="Simulate without saving media")
+            sub.add_argument(
+                "--include-partner", action="store_true", help="Include partner-shared media"
+            )
+            sub.add_argument(
+                "--log-file", type=Path, metavar="FILE", help="New log (default: logs/)"
+            )
+            if name == "upload":
+                sub.add_argument("--config", required=True, type=Path, metavar="INI")
+            else:
+                sub.add_argument("--output", required=True, type=Path, metavar="DIRECTORY")
+    args = parser.parse_args(argv)
+    paths = list(dict.fromkeys(path.expanduser().resolve() for path in args.archives))
+    try:
+        for path in paths:
+            with zipfile.ZipFile(path):
+                pass
+        if args.action == "query" or (args.action == "extract" and args.dry_run):
+            query(paths, args.date_range, getattr(args, "list_items", False))
+            if args.action == "extract":
+                print(
+                    f"\nDry run: no files written. Planned output: {json.dumps(str(args.output))}"
+                )
+                print("Partner-shared media: " + ("include" if args.include_partner else "exclude"))
+                print(
+                    "Extraction will exclude trashed and unmatched files; archived items included."
+                )
+            return 0
+        return run_immich_go(args, paths)
+    except ConfigError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    except (TakeoutError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

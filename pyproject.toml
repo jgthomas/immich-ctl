@@ -14,8 +14,8 @@ dependencies = []
 dev = ["ruff==0.14.1"]
 
 [tool.setuptools]
-packages = []
-script-files = ["immich-ping", "immich-describe-takeout"]
+packages = ["immich_ctl"]
+script-files = ["immich-ping", "immich-describe-takeout", "immich-takeout"]
 
 [tool.uv]
 # Setuptools copies script-files into .venv/bin; refresh them when sources change.
@@ -23,6 +23,8 @@ cache-keys = [
     { file = "pyproject.toml" },
     { file = "immich-ping" },
     { file = "immich-describe-takeout" },
+    { file = "immich-takeout" },
+    { file = "immich_ctl/**/*.py" },
     { file = "README.md" },
     { file = "MANIFEST.in" },
 ]
@@ -31,7 +33,7 @@ cache-keys = [
 target-version = "py311"
 line-length = 100
 # Include the executable Python scripts, which deliberately have no .py suffix.
-extend-include = ["immich-ping", "immich-describe-takeout"]
+extend-include = ["immich-ping", "immich-describe-takeout", "immich-takeout"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]

@@ -44,6 +44,7 @@ immich-go.json
 # Local archives, import logs and generated reports
 *.zip
 *.log
+logs/
 takeout-report*.txt
 
 # Editor and OS files

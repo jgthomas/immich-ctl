@@ -2,19 +2,16 @@
 """Test INI credentials using only GET /api/users/me (requires user.read)."""
 
 import argparse
-import configparser
 import json
 import math
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-
-class PingError(Exception):
-    pass
+from immich_ctl.config import ConfigError as PingError
+from immich_ctl.config import load_config as load_account
 
 
 class NoRedirects(HTTPRedirectHandler):
@@ -24,44 +21,8 @@ class NoRedirects(HTTPRedirectHandler):
 
 
 def load_config(path: Path) -> tuple[str, str]:
-    """Read account credentials and return the account endpoint and API key."""
-    config = configparser.ConfigParser(interpolation=None)
-    try:
-        with path.open(encoding="utf-8") as stream:
-            config.read_file(stream)
-        server = config.get("immich", "server").strip()
-        key = config.get("immich", "api_key").strip()
-    except OSError:
-        raise PingError("Cannot read the config file; check its path and permissions.") from None
-    except (configparser.Error, UnicodeError):
-        # Parser errors can quote lines containing the secret.
-        raise PingError(
-            "Invalid config: expected [immich] with server and api_key entries."
-        ) from None
-    if not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
-        raise PingError("api_key must be a non-empty value without spaces or control characters.")
-    try:
-        url = urlsplit(server)
-        _ = url.port  # Validate malformed ports too.
-        if (
-            url.scheme not in {"https", "http"}
-            or not url.hostname
-            or url.username is not None
-            or url.password is not None
-            or url.query
-            or url.fragment
-            or any(c.isspace() for c in server)
-        ):
-            raise ValueError()
-    except ValueError:
-        raise PingError(
-            "server must be an HTTP(S) URL without credentials, query or fragment."
-        ) from None
-    root = url.path.rstrip("/")
-    if not root.endswith("/api"):
-        root += "/api"
-    endpoint = urlunsplit((url.scheme, url.netloc, root + "/users/me", "", ""))
-    return endpoint, key
+    server, key = load_account(path)
+    return server + "/users/me", key
 
 
 def get_current_user(endpoint: str, key: str, timeout: float) -> dict[str, Any]:
