@@ -60,23 +60,19 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
   --config ~/.config/immich-ctl/ACCOUNT.ini --dry-run ~/Downloads/takeout-EXPORT-*.zip
 ```
 
-Remove `--dry-run` from the upload command to import. Extraction is optional;
-uploads read the original ZIPs directly. Neither operation modifies the ZIPs.
-The extracted archive uses immich-go's year/month folders and `.JSON` metadata,
-which its `upload from-folder` command can read; it is not an unchanged Takeout copy.
-
-Queries count metadata IDs, skip unknown/conflicting capture timestamps, and
-include all metadata states. They do not predict immich-go's file matching,
-deduplication or filtering results. Extraction dry runs show this metadata report
-and the plan: the installed immich-go's archive dry run writes files, so it is
-not invoked. Upload dry runs invoke immich-go and contact the server.
-
-Extraction and upload include archived items, exclude trashed/unmatched items,
-and exclude partner-shared media unless `--include-partner` is supplied. Uploads
-sync albums, disable overwrite and leave server jobs running. Logs are retained
-in `./logs/`; `--log-file FILE` chooses a new log path. API keys are passed through
-a private temporary config, never command-line arguments. These commands ignore
-ambient immich-go config and `IMMICH_GO_*` environment settings.
+- Remove `--dry-run` to upload. Extraction is optional; uploads read ZIPs directly.
+  Source ZIPs are never modified.
+- Extraction creates year/month folders and `.JSON` metadata compatible with
+  `immich-go upload from-folder`.
+- Queries count metadata IDs across all states, excluding unknown/conflicting
+  dates. Counts do not predict immich-go matching, filtering or deduplication.
+- Extraction dry runs only report the plan; upload dry runs contact the server.
+- Archived items are included; trashed/unmatched items are excluded. Add
+  `--include-partner` to include partner-shared media.
+- Uploads sync albums, disable overwrite and leave server jobs running.
+- Logs go to `./logs/`; use `--log-file FILE` for a new custom path.
+- Credentials use a private temporary config. Ambient immich-go config and
+  `IMMICH_GO_*` settings are ignored.
 
 ## Test Immich credentials
 
@@ -106,9 +102,9 @@ All commands and subcommands support `--help`.
 From the repository root:
 
 ```bash
-uv sync --locked --dev --group mutation  # Set up dependencies
-make check                             # Run all checks without syncing dependencies
-uv run --locked ruff format .           # Apply formatting
+uv sync --locked --dev --group mutation# Set up dependencies
+make check                             # Run all checks
+uv run --locked ruff format .          # Apply formatting
 ```
 
 Checks include:
