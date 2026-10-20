@@ -75,3 +75,6 @@ uv run --locked ruff format .
 Scripts stay in the repository root; tests and their script loader live in
 `tests/`. Tests use synthetic archives and mocked API responses. Commands can
 also run through uv, for example `uv run --locked immich-ping --help`.
+
+GitHub Actions runs the tests, Ruff checks and installed-command checks on pushes
+and pull requests. CI uses synthetic data and requires no Immich credentials.
