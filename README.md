@@ -1,6 +1,6 @@
 # immich-ctl
 
-Standalone scripts for PixelUnion Immich and Google Photos Takeout archives.
+Standalone scripts for Immich and Google Photos Takeout archives.
 
 ## Requirements
 
@@ -75,8 +75,3 @@ uv run --locked ruff format .
 Scripts stay in the repository root; tests and their script loader live in
 `tests/`. Tests use synthetic archives and mocked API responses. Commands can
 also run through uv, for example `uv run --locked immich-ping --help`.
-
-Add dependencies with `uv add PACKAGE` or `uv add --dev PACKAGE`. After manually
-editing dependencies, run `uv lock`. Keep `pyproject.toml`, `uv.lock` and
-`.python-version` in Git; keep `.venv/` and real credentials out. Install external
-tools such as `immich-go` separately.
