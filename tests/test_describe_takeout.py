@@ -1,12 +1,16 @@
 """Small synthetic exports exercising counting rather than real personal data."""
 
+import io
 import json
 import subprocess
 import tempfile
 import unittest
 import zipfile
+from collections import Counter
+from contextlib import redirect_stdout
 from pathlib import Path
 
+from immich_ctl import takeout as metadata
 from tests.script_loader import PROJECT_ROOT, load_script
 
 SCRIPT = PROJECT_ROOT / "immich-describe-takeout"
@@ -22,6 +26,215 @@ class TakeoutTests(unittest.TestCase):
                     f"Takeout/Google Photos/{name}",
                     data if isinstance(data, bytes) else json.dumps(data),
                 )
+
+    def test_report_counts_and_table_values(self) -> None:
+        items = {
+            ("url", "photo-1"): ("2022", "Photos"),
+            ("url", "photo-2"): ("2023", "Photos"),
+            ("url", "video"): ("2023", "Videos"),
+            ("url", "other"): ("Unknown", "Other"),
+        }
+        self.assertEqual(metadata.counts(items, items), Counter(Photos=2, Videos=1, Other=1))
+        self.assertEqual(
+            metadata.counts([("url", "video"), ("url", "other")], items),
+            Counter(Videos=1, Other=1),
+        )
+        self.assertEqual(metadata.counts([], items), Counter())
+        output = io.StringIO()
+        with redirect_stdout(output):
+            metadata.print_table("Album", [("Trip", Counter(Photos=3, Videos=2, Other=1))])
+        header, row = output.getvalue().splitlines()
+        self.assertEqual(header.casefold().split(), ["album", "photos", "videos", "other", "total"])
+        self.assertEqual(row.split(), ["Trip", "3", "2", "1", "6"])
+
+    def test_table_escapes_control_characters_in_album_names(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            metadata.print_table("Album", [("Trip\n\t\r\x1b[31m\\end", Counter(Photos=1))])
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[1].split()[0], r"Trip\n\t\r\x1b[31m\end")
+        for control in ("\t", "\r", "\x1b"):
+            self.assertNotIn(control, output.getvalue())
+
+    def test_missing_numbered_files_never_match_the_unindexed_original(self) -> None:
+        for sidecar in (
+            "photo(1).jpg.json",
+            "photo.jpg(1).json",
+            "photo.jpg.supplemental-metadata(1).json",
+        ):
+            with self.subTest(sidecar=sidecar), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "export.zip"
+                self.write_export(
+                    path,
+                    {
+                        "Album/photo.jpg": b"original",
+                        f"Album/{sidecar}": {
+                            "title": "photo.jpg",
+                            "url": "numbered",
+                            "photoTakenTime": {"timestamp": "1672531200"},
+                        },
+                    },
+                )
+                *_, coverage = inspect_archives([path])
+                self.assertEqual(coverage.missing_items, {("url", "numbered")})
+                self.assertFalse(coverage.matched_items)
+                self.assertFalse(coverage.ambiguous_items)
+                self.assertEqual({key[0] for key in coverage.unmatched_files}, {"Album/photo.jpg"})
+
+    def test_skipped_entries_do_not_hide_later_media(self) -> None:
+        photo = {
+            "title": "photo.jpg",
+            "url": "later",
+            "photoTakenTime": {"timestamp": "1672531200"},
+        }
+        prefix = "Takeout/Google Photos/"
+        skipped_entries = {
+            "directory": (prefix + "Ignored/", b""),
+            "outside Google Photos": ("Takeout/Other/data.json", b"{}"),
+            "duplicate": (
+                prefix + "Album/seed.jpg.json",
+                json.dumps({**photo, "title": "seed.jpg", "url": "seed"}),
+            ),
+            "memory titles": (prefix + "Album/user-generated-memory-titles.json", b"{}"),
+            "oversized JSON": (prefix + "Album/large.json", b" " * (8 * 1024 * 1024 + 1)),
+            "invalid JSON": (prefix + "Album/broken.json", b"{"),
+            "non-object JSON": (prefix + "Album/list.json", b"[]"),
+            "unrecognised JSON": (prefix + "Album/unrecognised.json", b"{}"),
+        }
+        for case, (name, contents) in skipped_entries.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "export.zip"
+                paths = []
+                if case == "duplicate":
+                    seed = Path(temporary) / "seed.zip"
+                    with zipfile.ZipFile(seed, "w") as archive:
+                        archive.writestr(name, contents)
+                    paths.append(seed)
+                with zipfile.ZipFile(path, "w") as archive:
+                    archive.writestr(name, contents)
+                    archive.writestr(prefix + "Album/photo.jpg.json", json.dumps(photo))
+                    archive.writestr(prefix + "Album/photo.jpg", b"photo")
+                paths.append(path)
+                items, _, _, raw, _, sidecars, coverage = inspect_archives(paths)
+                self.assertEqual(items[("url", "later")], ("2023", "Photos"))
+                self.assertEqual(coverage.matched_items, {("url", "later")})
+                self.assertEqual(raw, Counter(Photos=1))
+                self.assertEqual(sidecars, 2 if case == "duplicate" else 1)
+                self.assertEqual(coverage.directories, {"Album"})
+
+    def test_partial_media_metadata_is_recognised_without_inventing_capture_dates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "export.zip"
+            self.write_export(
+                path,
+                {
+                    "Album/created.jpg.json": {
+                        "title": "created.jpg",
+                        "creationTime": {"timestamp": "1672531200"},
+                    },
+                    "Album/url.jpg.json": {"title": "url.jpg", "url": "url-only"},
+                    "Album/metadata.json": {"title": "metadata.jpg", "url": "named-metadata"},
+                },
+            )
+            items, memberships, titles, _, warnings, sidecars, coverage = inspect_archives([path])
+            self.assertEqual(sidecars, 3)
+            self.assertEqual(Counter(items.values()), Counter({("Unknown", "Photos"): 3}))
+            self.assertEqual(items[("url", "url-only")], ("Unknown", "Photos"))
+            self.assertEqual(items[("url", "named-metadata")], ("Unknown", "Photos"))
+            self.assertEqual(len(memberships["Album"]), 3)
+            self.assertFalse(titles)
+            self.assertEqual(sum(warnings.values()), 1)  # The creation-only item lacks an ID.
+            self.assertTrue(all(not times for times in coverage.capture_times.values()))
+
+    def test_album_titles_fall_back_to_folder_for_missing_or_invalid_titles(self) -> None:
+        for invalid in (None, 42, ["title"], {"title": "nested"}):
+            with self.subTest(title=invalid), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "export.zip"
+                self.write_export(
+                    path,
+                    {
+                        "Current/metadata.json": {"title": invalid},
+                        "Old/album.json": {"albumData": {"title": invalid}},
+                        "Missing/metadata.json": {},
+                    },
+                )
+                items, memberships, titles, _, warnings, sidecars, _ = inspect_archives([path])
+                self.assertEqual(titles, {"Current": "Current", "Old": "Old", "Missing": "Missing"})
+                self.assertEqual(memberships, {folder: set() for folder in titles})
+                self.assertFalse(items)
+                self.assertFalse(warnings)
+                self.assertEqual(sidecars, 0)
+
+    def test_conflict_and_missing_sidecar_counts_accumulate(self) -> None:
+        entries = {}
+        for identity in ("first", "second"):
+            for directory, extension, timestamp in (
+                ("A", "jpg", "1672531200"),
+                ("B", "mov", "1704067200"),
+            ):
+                entries[f"{directory}/{identity}.{extension}.json"] = {
+                    "title": f"{identity}.{extension}",
+                    "url": identity,
+                    "photoTakenTime": {"timestamp": timestamp},
+                }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "export.zip"
+            self.write_export(path, entries)
+            items, _, _, _, warnings, sidecars, coverage = inspect_archives([path])
+            self.assertEqual(
+                items, {("url", name): ("Unknown", "Other") for name in ("first", "second")}
+            )
+            for category in ("conflicting capture years", "conflicting media types"):
+                self.assertEqual(
+                    sum(
+                        count
+                        for message, count in warnings.items()
+                        if category in message.casefold()
+                    ),
+                    2,
+                )
+            self.assertEqual(sum(warnings.values()), 4)
+            self.assertEqual(sidecars, 4)
+            self.assertEqual(coverage.sidecars_without_local_match, 4)
+            self.assertEqual(coverage.missing_items, set(items))
+
+    def test_json_size_boundary_and_warning_counts(self) -> None:
+        limit = 8 * 1024 * 1024
+        payload = json.dumps({"title": "photo.jpg", "url": "boundary"}).encode()
+        entries = {
+            "Album/boundary.jpg.json": payload.ljust(limit, b" "),
+            "Album/oversized-1.json": payload.ljust(limit + 1, b" "),
+            "Album/oversized-2.json": payload.ljust(limit + 2, b" "),
+            "Album/broken-1.json": b"{",
+            "Album/broken-2.json": b"\xff",
+            "Album/non-object-1.json": [],
+            "Album/non-object-2.json": None,
+            "Album/unrecognised-1.json": {},
+            "Album/unrecognised-2.json": {"title": "no media fields"},
+            "Album/user-generated-memory-titles.json": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "export.zip"
+            self.write_export(path, entries)
+            items, _, _, _, warnings, sidecars, _ = inspect_archives([path])
+            self.assertEqual(items, {("url", "boundary"): ("Unknown", "Photos")})
+            self.assertEqual(sidecars, 1)
+            for category in (
+                "larger than 8 mib",
+                "unreadable json",
+                "non-object json",
+                "unrecognised json",
+            ):
+                self.assertEqual(
+                    sum(
+                        count
+                        for message, count in warnings.items()
+                        if category in message.casefold()
+                    ),
+                    2,
+                )
+            self.assertEqual(sum(warnings.values()), 8)
 
     def test_unknown_dates_and_zero_timestamp(self) -> None:
         for timestamp in ("0", 0, None, True, 12.5, "1.5", "not-a-date"):
@@ -213,7 +426,14 @@ class TakeoutTests(unittest.TestCase):
                 },
             )
             _, _, titles, _, _, _, _ = inspect_archives([path])
-            self.assertEqual(set(titles), {"Photos from 2023", "Old album", "Empty"})
+            self.assertEqual(
+                titles,
+                {
+                    "Photos from 2023": "A real album named like a year folder",
+                    "Old album": "Old-style album",
+                    "Empty": "Empty",
+                },
+            )
             result = subprocess.run(
                 [str(SCRIPT), str(path)], capture_output=True, text=True, check=True
             )
