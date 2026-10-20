@@ -36,13 +36,14 @@ Create a private config from [account.example.ini](account.example.ini):
 ```bash
 mkdir -p ~/.config/immich-ctl
 chmod 700 ~/.config/immich-ctl
-install -m 600 account.example.ini ~/.config/immich-ctl/james.ini
+install -m 600 account.example.ini ~/.config/immich-ctl/ACCOUNT.ini
 ```
 
-Edit the file with your HTTPS PixelUnion URL and API key, then run:
+Replace `ACCOUNT` with a name for the account. Edit the file with your HTTPS
+PixelUnion URL and API key, then run:
 
 ```bash
-./immich-ping --config ~/.config/immich-ctl/james.ini
+./immich-ping --config ~/.config/immich-ctl/ACCOUNT.ini
 ```
 
 Use a separate INI file per user. `--config` is required. The key needs `user.read`.
