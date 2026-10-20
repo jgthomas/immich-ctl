@@ -100,6 +100,52 @@ class TakeoutTests(unittest.TestCase):
             self.assertEqual(len(coverage.ambiguous_items), 2)
             self.assertEqual(len(coverage.unmatched_files), 1)
 
+    def test_ambiguous_candidates_compete_with_exact_matches_for_different_ids(self) -> None:
+        for same_identity in (False, True):
+            for reverse in (False, True):
+                with self.subTest(same_identity=same_identity, reverse=reverse):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        path = Path(temporary) / "export.zip"
+                        entries: dict[str, object] = {
+                            "Album/image.jpg": b"jpeg",
+                            "Album/image.png": b"png",
+                            "Album/image.supplemental-metadata.json": {
+                                "title": "image",
+                                "url": "ambiguous",
+                                "photoTakenTime": {"timestamp": "1672531200"},
+                            },
+                            "Album/image.jpg.supplemental-metadata.json": {
+                                "title": "image.jpg",
+                                "url": "ambiguous" if same_identity else "exact",
+                                "photoTakenTime": {"timestamp": "1672531200"},
+                            },
+                        }
+                        if reverse:
+                            entries = dict(reversed(list(entries.items())))
+                        self.write_export(path, entries)
+                        _, _, _, _, _, _, coverage = inspect_archives([path])
+                        self.assertFalse(coverage.missing_items)
+                        if same_identity:
+                            self.assertEqual(coverage.matched_items, {("url", "ambiguous")})
+                            self.assertFalse(coverage.ambiguous_items)
+                            self.assertEqual(
+                                {key[0] for key in coverage.matched_files}, {"Album/image.jpg"}
+                            )
+                            self.assertEqual(
+                                {key[0] for key in coverage.unmatched_files}, {"Album/image.png"}
+                            )
+                        else:
+                            self.assertFalse(coverage.matched_items)
+                            self.assertFalse(coverage.matched_files)
+                            self.assertEqual(
+                                coverage.ambiguous_items, {("url", "ambiguous"), ("url", "exact")}
+                            )
+                            self.assertEqual(coverage.ambiguous_sidecars, 2)
+                            self.assertEqual(
+                                {key[0] for key in coverage.unmatched_files},
+                                {"Album/image.jpg", "Album/image.png"},
+                            )
+
     def test_metadata_reconciliation_is_independent_of_archive_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             first = Path(temporary) / "first.zip"

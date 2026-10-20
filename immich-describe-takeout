@@ -195,8 +195,9 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                 title = title if isinstance(title, str) else ""
                 candidates = match_media(relative, title, filenames, stems)
                 matches.append((identity, candidates))
-                if len(candidates) == 1:
-                    owners[next(iter(candidates))].add(identity)
+                # Ambiguous candidates still compete with another ID's exact match.
+                for candidate in candidates:
+                    owners[candidate].add(identity)
                 candidate_types = {media_type(key[0]) for key in candidates} - {"Other"}
                 kind = media_type(title)
                 if len(candidate_types) == 1:
