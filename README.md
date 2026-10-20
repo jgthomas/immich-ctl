@@ -110,6 +110,7 @@ uv sync --locked
 uv run --locked python -m unittest discover -v
 uv run --locked ruff check .
 uv run --locked ruff format --check .
+uv run --locked mypy
 
 # Apply formatting:
 uv run --locked ruff format .
@@ -120,5 +121,8 @@ Scripts stay in the repository root; shared config and Takeout helpers live in
 responses; an optional extraction integration test runs when immich-go is installed. Commands can
 also run through uv, for example `uv run --locked immich-ping --help`.
 
-GitHub Actions runs the tests, Ruff checks and installed-command checks on pushes
+Mypy checks the three executable scripts and shared modules, including unannotated
+function bodies. Strict mode is not enabled.
+
+GitHub Actions runs the tests, Ruff, mypy and installed-command checks on pushes
 and pull requests. CI uses synthetic data and requires no Immich credentials.

@@ -11,7 +11,10 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
-dev = ["ruff==0.14.1"]
+dev = [
+    "mypy>=2.4.0",
+    "ruff==0.14.1",
+]
 
 [tool.setuptools]
 packages = ["immich_ctl"]
@@ -37,3 +40,10 @@ extend-include = ["immich-ping", "immich-describe-takeout", "immich-takeout"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich_ctl"]
+# Give each extensionless script its own module name when checking them together.
+scripts_are_modules = true
+check_untyped_defs = true

@@ -47,6 +47,9 @@ jobs:
       - name: Check formatting
         run: uv run --locked ruff format --check .
 
+      - name: Check types
+        run: uv run --locked mypy
+
       - name: Check installed commands
         run: |
           uv run --locked immich-ping --help

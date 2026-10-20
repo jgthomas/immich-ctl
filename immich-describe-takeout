@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> None:
     print("Live Photo clips, edits and files without JSON may add extra file entries.")
     print("Conflicting capture years are Unknown; conflicting media types are Other.")
 
-    by_year = defaultdict(Counter)
+    by_year: defaultdict[str, Counter[str]] = defaultdict(Counter)
     for year, kind in items.values():
         by_year[year][kind] += 1
     print("\nBy capture year")

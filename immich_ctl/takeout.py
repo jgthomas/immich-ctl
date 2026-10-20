@@ -126,8 +126,8 @@ def inspect_archives(paths: list[Path]) -> Inspection:
     items: Items = {}
     memberships: defaultdict[str, set[ItemIdentity]] = defaultdict(set)
     album_titles = {}
-    raw_files = Counter()
-    warnings = Counter()
+    raw_files: Counter[str] = Counter()
+    warnings: Counter[str] = Counter()
     seen_entries = set()
     sidecars = 0
     filenames: defaultdict[str, set[FileKey]] = defaultdict(set)
@@ -191,6 +191,7 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                     continue
                 sidecars += 1
                 url = data.get("url")
+                identity: ItemIdentity
                 if isinstance(url, str) and url:
                     identity = ("url", url)
                 else:
