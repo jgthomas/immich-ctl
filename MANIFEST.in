@@ -1,2 +1,4 @@
 include account.example.ini
+include check
+include Makefile
 recursive-include tests *.py

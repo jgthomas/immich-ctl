@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Run the local development checks, including informational mutation testing.
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+
+uv run --locked --no-sync python -m unittest discover -v
+uv run --locked --no-sync ruff check .
+uv run --locked --no-sync ruff format --check .
+uv run --locked --no-sync mypy
+
+for command in immich-ping immich-describe-takeout immich-takeout; do
+    uv run --locked --no-sync "$command" --help > /dev/null
+done
+
+mkdir -p mutants
+mutation_log=mutants/check.log
+printf '\nRunning mutation tests...\n'
+if uv run --locked --no-sync mutmut run --max-children 2 > "$mutation_log" 2>&1 &&
+    uv run --locked --no-sync mutmut export-cicd-stats >> "$mutation_log" 2>&1; then
+    uv run --locked --no-sync python - <<'PY'
+import json
+from pathlib import Path
+
+stats = json.loads(Path("mutants/mutmut-cicd-stats.json").read_text())
+print(f"Mutations: {stats['killed']} caught, {stats['survived']} survived, {stats['total']} total.")
+for name in ("no_tests", "skipped", "suspicious", "timeout", "check_was_interrupted_by_user", "segfault"):
+    if stats[name]:
+        print(f"  {name.replace('_', ' ')}: {stats[name]}")
+print("Full mutation output: mutants/check.log")
+PY
+else
+    status=$?
+    tail -n 40 "$mutation_log" >&2
+    printf '\nMutation testing failed; full output: %s\n' "$mutation_log" >&2
+    exit "$status"
+fi

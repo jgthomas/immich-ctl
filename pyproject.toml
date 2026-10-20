@@ -15,6 +15,9 @@ dev = [
     "mypy>=2.4.0",
     "ruff==0.14.1",
 ]
+mutation = [
+    "mutmut>=3.8.0",
+]
 
 [tool.setuptools]
 packages = ["immich_ctl"]
@@ -47,3 +50,14 @@ files = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich_ctl
 # Give each extensionless script its own module name when checking them together.
 scripts_are_modules = true
 check_untyped_defs = true
+
+[tool.mutmut]
+# Start with shared parsing/validation; the extensionless CLI scripts are copied
+# so the existing tests run, but are not themselves mutation targets.
+source_paths = ["immich_ctl/"]
+also_copy = ["immich-ping", "immich-describe-takeout", "immich-takeout"]
+pytest_add_cli_args_test_selection = ["tests/"]
+
+[tool.pytest.ini_options]
+# Avoid collecting the test copies generated under mutants/ on normal runs.
+testpaths = ["tests"]

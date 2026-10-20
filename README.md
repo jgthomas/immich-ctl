@@ -106,15 +106,22 @@ All commands and subcommands support `--help`.
 Use [uv](https://docs.astral.sh/uv/) from the repository root.
 
 ```bash
-uv sync --locked
-uv run --locked python -m unittest discover -v
-uv run --locked ruff check .
-uv run --locked ruff format --check .
-uv run --locked mypy
+# Install or update dependencies separately:
+uv sync --locked --dev --group mutation
+
+# Run checks using the existing environment:
+make check
 
 # Apply formatting:
 uv run --locked ruff format .
 ```
+
+`make check` runs `./check` using the existing environment without syncing dependencies.
+It runs unit tests,
+Ruff lint/format checks, mypy, installed-command smoke checks and mutation tests.
+It stops on the first failed check or tool error; surviving mutations are reported
+without failing the command. It checks formatting without changing source files.
+Mutation output is summarised; the full log is saved to `mutants/check.log`.
 
 Scripts stay in the repository root; shared config and Takeout helpers live in
 `immich_ctl/`, and tests in `tests/`. Tests use synthetic archives and mocked API
@@ -123,6 +130,24 @@ also run through uv, for example `uv run --locked immich-ping --help`.
 
 Mypy checks the three executable scripts and shared modules, including unannotated
 function bodies. Strict mode is not enabled.
+
+Mutation testing runs on Linux/macOS and is included in `./check`. It uses pytest to
+run the existing unittest tests; the normal test command remains unchanged.
+
+```bash
+uv sync --locked --group mutation
+# Start with credential validation, or omit the filter to check all shared helpers:
+uv run --locked --group mutation mutmut run --max-children 4 'immich_ctl.config*'
+uv run --locked --group mutation mutmut results
+uv run --locked --group mutation mutmut browse
+```
+
+Mutmut changes copies under `mutants/`. It currently targets `immich_ctl/`, not the
+extensionless CLI scripts. Survivors need inspection: some indicate missing
+assertions, while others are equivalent behaviour or changes to error wording.
+CI also runs all shared-helper mutations in a separate, non-blocking job. Its
+summary shows the counts and run status; the `mutation-report` artifact retains
+logs and mutation details for 14 days. No suppressions or score threshold are set.
 
 GitHub Actions runs the tests, Ruff, mypy and installed-command checks on pushes
 and pull requests. CI uses synthetic data and requires no Immich credentials.
