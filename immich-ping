@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Test INI credentials using only GET /api/users/me (requires user.read)."""
+
+import argparse
+import configparser
+import json
+import math
+from pathlib import Path
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+class PingError(Exception):
+    pass
+
+
+class NoRedirects(HTTPRedirectHandler):
+    # Never forward the API key to a redirect target, even on the same host.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def load_config(path):
+    config = configparser.ConfigParser(interpolation=None)
+    try:
+        with path.open(encoding="utf-8") as stream:
+            config.read_file(stream)
+        server = config.get("immich", "server").strip()
+        key = config.get("immich", "api_key").strip()
+    except OSError:
+        raise PingError("Cannot read the config file; check its path and permissions.") from None
+    except (configparser.Error, UnicodeError):
+        # Parser errors can quote lines containing the secret.
+        raise PingError("Invalid config: expected [immich] with server and api_key entries.") from None
+    if not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
+        raise PingError("api_key must be a non-empty value without spaces or control characters.")
+    try:
+        url = urlsplit(server)
+        _ = url.port  # Validate malformed ports too.
+        if (url.scheme not in {"https", "http"} or not url.hostname or
+                url.username is not None or url.password is not None or
+                url.query or url.fragment or any(c.isspace() for c in server)):
+            raise ValueError()
+    except ValueError:
+        raise PingError("server must be an HTTP(S) URL without credentials, query or fragment.") from None
+    root = url.path.rstrip("/")
+    if not root.endswith("/api"):
+        root += "/api"
+    endpoint = urlunsplit((url.scheme, url.netloc, root + "/users/me", "", ""))
+    return endpoint, key
+
+
+def get_current_user(endpoint, key, timeout):
+    request = Request(endpoint, headers={"x-api-key": key, "Accept": "application/json"}, method="GET")
+    try:
+        with build_opener(NoRedirects()).open(request, timeout=timeout) as response:
+            if response.status != 200:
+                raise PingError(f"Unexpected HTTP status {response.status}.")
+            payload = response.read(1024 * 1024 + 1)
+    except HTTPError as error:
+        status = error.code
+        error.close()
+        messages = {
+            401: "Authentication failed (HTTP 401); check the API key.",
+            403: "Access denied (HTTP 403); check that the key permits user.read.",
+            404: "API endpoint not found (HTTP 404); check the server URL.",
+        }
+        if 300 <= status < 400:
+            raise PingError("Server redirected the request; set server to the final Immich URL. "
+                            "The API key was not forwarded.") from None
+        raise PingError(messages.get(status, f"Server returned HTTP {status}.")) from None
+    except (URLError, OSError, ValueError):
+        raise PingError("Connection failed; check the URL, network and TLS certificate, "
+                        "or increase --timeout.") from None
+    if len(payload) > 1024 * 1024:
+        raise PingError("Unexpected response: account JSON exceeds 1 MiB.")
+    try:
+        user = json.loads(payload)
+    except (ValueError, UnicodeError):
+        raise PingError("Server did not return valid JSON; check the server URL.") from None
+    if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"]:
+        raise PingError("Unexpected response: no Immich user ID found.")
+    return user
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True, type=Path, metavar="FILE", help="Account INI file")
+    parser.add_argument("--timeout", type=float, default=15, metavar="SECONDS", help="Request timeout (default: 15)")
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be a positive finite number")
+    try:
+        endpoint, key = load_config(args.config.expanduser())
+        user = get_current_user(endpoint, key, args.timeout)
+    except PingError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    def safe(value):
+        # Quote remote strings and redact even an accidentally echoed API key.
+        return json.dumps(str(value).replace(key, "[REDACTED]"), ensure_ascii=True)
+    print("OK: credentials loaded and authenticated read-only request succeeded.")
+    for label, field in (("Account", "name"), ("Email", "email"), ("User ID", "id")):
+        if user.get(field):
+            print(f"{label}: {safe(user[field])}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

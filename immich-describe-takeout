@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Describe Google Photos Takeout ZIPs without extracting or modifying them."""
+
+import argparse
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+import re
+import sys
+import zipfile
+import json
+
+
+PHOTO_EXTENSIONS = set("jpg jpeg heic heif png gif webp avif bmp tif tiff dng raw cr2 cr3 nef arw raf orf rw2 pef srw".split())
+VIDEO_EXTENSIONS = set("mp4 mov m4v avi mpg mpeg 3gp 3g2 mts m2ts mkv webm wmv mod tod".split())
+
+
+def media_type(name):
+    extension = PurePosixPath(name).suffix.lower().lstrip(".")
+    if extension in PHOTO_EXTENSIONS:
+        return "Photos"
+    if extension in VIDEO_EXTENSIONS:
+        return "Videos"
+    return "Other"
+
+
+def capture_year(data):
+    try:
+        timestamp = data["photoTakenTime"]["timestamp"]
+        return str(datetime.fromtimestamp(int(timestamp), timezone.utc).year)
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return "Unknown"
+
+
+def inspect_archives(paths):
+    items = {}
+    memberships = defaultdict(set)
+    album_titles = {}
+    raw_files = Counter()
+    warnings = Counter()
+    seen_entries = set()
+    sidecars = 0
+    file_types = defaultdict(set)
+    # Index every part first: the JSON and its media may be in different ZIPs.
+    for path in paths:
+        with zipfile.ZipFile(path) as archive:
+            for entry in archive.infolist():
+                name = PurePosixPath(entry.filename)
+                kind = media_type(name.name)
+                if not entry.is_dir() and kind != "Other":
+                    file_types[(str(name.parent), name.stem)].add(kind)
+    for path in paths:
+        with zipfile.ZipFile(path) as archive:
+            for entry in archive.infolist():
+                parts = PurePosixPath(entry.filename).parts
+                if entry.is_dir() or "Google Photos" not in parts:
+                    continue
+                # Only inspect files below Takeout's Google Photos directory.
+                relative = PurePosixPath(*parts[parts.index("Google Photos") + 1:])
+                directory = str(relative.parent)
+                # Split exports can repeat a path; keep differing contents visible.
+                entry_key = (str(relative), entry.CRC, entry.file_size)
+                if entry_key in seen_entries:
+                    continue
+                seen_entries.add(entry_key)
+                if relative.suffix.lower() != ".json":
+                    raw_files[media_type(relative.name)] += 1
+                    continue
+                if relative.name == "user-generated-memory-titles.json":
+                    continue
+                if entry.file_size > 8 * 1024 * 1024:
+                    warnings["JSON files larger than 8 MiB (skipped)"] += 1
+                    continue
+                try:
+                    data = json.loads(archive.read(entry))
+                except (ValueError, UnicodeError):
+                    warnings["Unreadable JSON files (skipped)"] += 1
+                    continue
+                if not isinstance(data, dict):
+                    warnings["Non-object JSON files (skipped)"] += 1
+                    continue
+                # Album metadata has a title but no media capture metadata.
+                if relative.name == "metadata.json" and "photoTakenTime" not in data:
+                    title = data.get("title")
+                    album_titles[directory] = title if isinstance(title, str) else directory
+                    memberships[directory]  # Include empty albums.
+                    continue
+                if not any(key in data for key in ("photoTakenTime", "creationTime", "url")):
+                    warnings["Unrecognised JSON files (skipped)"] += 1
+                    continue
+                sidecars += 1
+                url = data.get("url")
+                if isinstance(url, str) and url:
+                    identity = ("url", url)
+                else:
+                    identity = ("path", str(relative), entry.CRC, entry.file_size)
+                    warnings["Media JSON without a Google Photos ID (counted separately)"] += 1
+                title = data.get("title")
+                kind = media_type(title if isinstance(title, str) else "")
+                if kind == "Other":
+                    base = re.sub(r"(?:\.supplemental-metadata)?\.json$", "", relative.name)
+                    candidates = set()
+                    for stem in (title, base):
+                        if isinstance(stem, str):
+                            candidates.update(file_types.get(
+                                (str(PurePosixPath(entry.filename).parent), stem), set()))
+                    if len(candidates) == 1:
+                        kind = candidates.pop()
+                year = capture_year(data)
+                if identity in items:
+                    if items[identity] != (year, kind):
+                        warnings["Repeated IDs with conflicting year/type (first value used)"] += 1
+                else:
+                    items[identity] = (year, kind)
+                memberships[directory].add(identity)
+    return items, memberships, album_titles, raw_files, warnings, sidecars
+
+
+def counts(identities, items):
+    return Counter(items[identity][1] for identity in identities)
+
+
+def print_table(label, rows):
+    rows = [(str(name), tally) for name, tally in rows]
+    # Escape control characters so album names cannot alter the terminal output.
+    rows = [("".join(c if c.isprintable() else repr(c)[1:-1] for c in name), tally)
+            for name, tally in rows]
+    width = max([len(label)] + [len(name) for name, _ in rows])
+    print(f"{label:<{width}}  {'Photos':>8}  {'Videos':>8}  {'Other':>8}  {'Total':>8}")
+    for name, tally in rows:
+        print(f"{name:<{width}}  {tally['Photos']:>8,}  {tally['Videos']:>8,}  "
+              f"{tally['Other']:>8,}  {sum(tally.values()):>8,}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Pass all ZIP parts from ONE person's export together. Requires Python 3 only.",
+    )
+    parser.add_argument("archives", nargs="+", type=Path, metavar="ZIP")
+    args = parser.parse_args()
+    paths = list(dict.fromkeys(path.expanduser().resolve() for path in args.archives))
+    try:
+        items, memberships, titles, raw, warnings, sidecars = inspect_archives(paths)
+    except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
+        parser.exit(2, f"Error reading Takeout: {error}\n")
+    if not items and not raw and not titles:
+        parser.exit(2, "No Google Photos content found in the supplied ZIPs.\n")
+
+    print(f"Archives: {len(paths)}")
+    print(f"Google Photos items described by JSON: {len(items):,}")
+    print(f"Media JSON entries: {sidecars:,} (includes album copies)")
+    print("\nCounts use Google Photos IDs to deduplicate album/year copies.")
+    print("Years use photoTakenTime in UTC; missing/invalid dates are Unknown.")
+    print("These are metadata counts, not checksums or visually deduplicated counts.")
+    print("Live Photo clips, edits and files without JSON may add extra file entries.")
+
+    by_year = defaultdict(Counter)
+    for year, kind in items.values():
+        by_year[year][kind] += 1
+    print("\nBy capture year")
+    print_table("Year", [(year, by_year[year]) for year in sorted(by_year)])
+    print_table("", [("TOTAL", counts(items, items))])
+
+    # A folder with album metadata is an album even if its name resembles a year folder.
+    albums = {directory for directory in memberships
+              if directory in titles or (directory != "." and
+                 directory not in {"Archive", "Trash", "Failed videos"} and
+                 not re.fullmatch(r"Photos from \d{4}", directory))}
+    title_counts = Counter(titles.get(directory, directory) for directory in albums)
+    rows = []
+    for directory in albums:
+        title = titles.get(directory, directory)
+        if title_counts[title] > 1:
+            title = f"{title} [folder: {directory}]"
+        rows.append((title, counts(memberships[directory], items)))
+    print(f"\nBy album ({len(albums):,} albums; one item can belong to several)")
+    print_table("Album", sorted(rows, key=lambda row: row[0].casefold()))
+
+    print("\nZIP file inventory (includes album copies and companion files)")
+    print_table("Files", [("Media", Counter({k: raw[k] for k in ("Photos", "Videos")}))])
+    print(f"Other non-JSON file entries: {raw['Other']:,}")
+    print("Files without usable JSON are included only in the ZIP inventory.")
+    if warnings:
+        print("\nWarnings")
+        for message, number in sorted(warnings.items()):
+            print(f"  {message}: {number:,}")
+
+
+if __name__ == "__main__":
+    main()
