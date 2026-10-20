@@ -1,7 +1,13 @@
 # immich-ctl
 
 Standalone scripts for PixelUnion Immich and Google Photos Takeout archives.
-Requires **Python 3.11+**, with no third-party runtime packages.
+
+## Requirements
+
+- **Python 3.11+**. The Takeout script uses `datetime.UTC`, introduced in Python 3.11.
+- No third-party runtime packages.
+- For `immich-ping`: your PixelUnion URL and an API key with `user.read` permission.
+- For development: [uv](https://docs.astral.sh/uv/).
 
 ## Describe a Takeout export
 
@@ -54,8 +60,7 @@ Both commands support `--help`.
 
 ## Development
 
-Use [uv](https://docs.astral.sh/uv/) from the repository root. Development uses
-Python 3.14, selected by `.python-version`.
+Use [uv](https://docs.astral.sh/uv/) from the repository root.
 
 ```bash
 uv sync --locked
