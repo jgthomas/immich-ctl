@@ -103,51 +103,32 @@ All commands and subcommands support `--help`.
 
 ## Development
 
-Use [uv](https://docs.astral.sh/uv/) from the repository root.
+From the repository root:
 
 ```bash
-# Install or update dependencies separately:
-uv sync --locked --dev --group mutation
-
-# Run checks using the existing environment:
-make check
-
-# Apply formatting:
-uv run --locked ruff format .
+uv sync --locked --dev --group mutation  # Set up dependencies
+make check                             # Run all checks without syncing dependencies
+uv run --locked ruff format .           # Apply formatting
 ```
 
-`make check` runs `./check` using the existing environment without syncing dependencies.
-It runs unit tests,
-Ruff lint/format checks, mypy, installed-command smoke checks and mutation tests.
-It stops on the first failed check or tool error; surviving mutations are reported
-without failing the command. It checks formatting without changing source files.
-Mutation output is summarised; the full log is saved to `mutants/check.log`.
+Checks include:
 
-Scripts stay in the repository root; shared config and Takeout helpers live in
-`immich_ctl/`, and tests in `tests/`. Tests use synthetic archives and mocked API
-responses; an optional extraction integration test runs when immich-go is installed. Commands can
-also run through uv, for example `uv run --locked immich-ping --help`.
+- Unit tests, plus an extraction integration test when `immich-go` is installed.
+- Ruff lint and formatting checks.
+- Mypy type checking for the scripts and shared modules.
+- Installed-command `--help` smoke checks.
+- Mutmut mutation testing of shared helpers in `immich_ctl/`.
 
-Mypy checks the three executable scripts and shared modules, including unannotated
-function bodies. Strict mode is not enabled.
-
-Mutation testing runs on Linux/macOS and is included in `./check`. It uses pytest to
-run the existing unittest tests; the normal test command remains unchanged.
+Mutation tests run on copies of the helpers; the extensionless CLI scripts are
+not mutated. Surviving mutations may reveal missing assertions or equivalent
+behaviour and do not fail the checks. Local output shows a summary; full output
+is saved to `mutants/check.log`. Inspect survivors with:
 
 ```bash
-uv sync --locked --group mutation
-# Start with credential validation, or omit the filter to check all shared helpers:
-uv run --locked --group mutation mutmut run --max-children 4 'immich_ctl.config*'
-uv run --locked --group mutation mutmut results
-uv run --locked --group mutation mutmut browse
+uv run --locked --no-sync mutmut results
+uv run --locked --no-sync mutmut browse
 ```
 
-Mutmut changes copies under `mutants/`. It currently targets `immich_ctl/`, not the
-extensionless CLI scripts. Survivors need inspection: some indicate missing
-assertions, while others are equivalent behaviour or changes to error wording.
-CI also runs all shared-helper mutations in a separate, non-blocking job. Its
-summary shows the counts and run status; the `mutation-report` artifact retains
-logs and mutation details for 14 days. No suppressions or score threshold are set.
-
-GitHub Actions runs the tests, Ruff, mypy and installed-command checks on pushes
-and pull requests. CI uses synthetic data and requires no Immich credentials.
+GitHub Actions runs the standard checks on Python 3.11–3.14 using synthetic data
+and no Immich credentials. Mutation testing runs separately as a non-blocking
+report, with full logs and details in the `mutation-report` artifact for 14 days.
