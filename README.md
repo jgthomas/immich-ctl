@@ -6,7 +6,7 @@ Standalone scripts for PixelUnion Immich and Google Photos Takeout archives.
 
 - **Python 3.11+**. The Takeout script uses `datetime.UTC`, introduced in Python 3.11.
 - No third-party runtime packages.
-- For `immich-ping`: your PixelUnion URL and an API key with `user.read` permission.
+- For `immich-ping`: your Immich server URL and an API key with `user.read` permission.
 - For development: [uv](https://docs.astral.sh/uv/).
 
 ## Describe a Takeout export
