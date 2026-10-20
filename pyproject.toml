@@ -17,6 +17,16 @@ dev = ["ruff==0.14.1"]
 packages = []
 script-files = ["immich-ping", "immich-describe-takeout"]
 
+[tool.uv]
+# Setuptools copies script-files into .venv/bin; refresh them when sources change.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "immich-ping" },
+    { file = "immich-describe-takeout" },
+    { file = "README.md" },
+    { file = "MANIFEST.in" },
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

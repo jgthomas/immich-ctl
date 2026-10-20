@@ -24,17 +24,49 @@ otherwise the folder name is used. `Photos from YYYY` folders are excluded from
 albums unless they explicitly contain album metadata.
 The special `Archive`, `Trash` and `Failed videos` folders are also excluded
 unless they contain album metadata. Their items remain in the year counts.
+Albums with metadata are shown as confirmed. Other folders are listed separately
+as possible albums, including folders containing media without JSON. Their
+displayed counts still describe JSON items; a zero does not mean the folder is empty.
+Both current `metadata.json` albums and older `albumData` wrappers are recognised.
 
 Years come from `photoTakenTime`, interpreted in UTC. Dates near New Year can
 therefore differ from the year displayed in a local time zone. Missing or invalid
-capture dates appear under `Unknown`; file modification dates are not substituted.
+capture dates, including Google's zero timestamp, appear under `Unknown`; file
+modification and upload dates are not substituted. Copies with the same Google
+Photos ID contribute available date/type information. Conflicting known capture
+years are reported as `Unknown`; conflicting known media types as `Other`, with
+warnings, rather than depending on which archive was read first.
 
 The separate ZIP inventory counts files by extension, including repeated album
 copies, edited versions and Live Photo companion clips. Files without usable JSON
 appear only in this inventory. Metadata counts do not establish byte identity,
-visual uniqueness, or whether Immich will import or skip a file. The script does
-not check that each sidecar has a matching media file. Keep all export parts
-together for a meaningful report.
+visual uniqueness, or whether Immich will import or skip a file. The script
+checks metadata-to-file coverage using filenames across all supplied ZIP parts.
+For a metadata item, a confirmed match in any album/year folder with the same
+Google Photos ID establishes coverage, even if other copies of its JSON lack
+media in their own folder. Coverage distinguishes confirmed, ambiguous and
+unmatched items. It does not establish that an unmatched item's media is absent:
+an unsupported filename variation can prevent a match.
+
+Matching supports `.json`, `.supplemental-metadata.json`, numbered sidecars and
+older duplicate suffix placement. The sidecar filename takes precedence over
+its title, and duplicate suffixes are preserved to avoid attaching a sidecar to
+the wrong photo. Extensionless names matching multiple files are ambiguous. A
+file claimed by different Google Photos IDs is also ambiguous. No loose prefix
+matching is used. These rules are deliberately conservative and do not reproduce
+all of immich-go's matching heuristics or predict its import results.
+
+The report also counts file entries without a confirmed sidecar match. These can
+include edited versions, Live Photo clips, ambiguous filenames and missing JSON.
+They remain separate from metadata totals: the script does not infer their dates,
+automatically count them as new items, or assume they are duplicates. It reads
+filenames and JSON only, without examining media contents or embedded EXIF.
+Keep all export parts together for a meaningful report. To list unresolved items
+and unpaired file entries:
+
+```bash
+./immich-describe-takeout --details ~/Downloads/takeout-20261018T153319Z-1-*.zip
+```
 
 Run the synthetic counting checks with `python3 -m unittest discover -v`.
 
@@ -89,6 +121,8 @@ uv creates `.venv/` and installs the project and development tools. It can downl
 the selected Python version if it is not available locally. No environment
 activation is needed. On a new machine, clone the repository, run the command
 above, and configure account credentials separately outside the repository.
+The uv cache configuration tracks the executable sources so changes refresh the
+installed commands in `.venv/bin/` as well as the directly runnable scripts.
 
 Run tests and checks:
 

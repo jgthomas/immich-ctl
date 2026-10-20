@@ -7,12 +7,31 @@ import re
 import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeAlias
 
 ItemIdentity: TypeAlias = tuple[str, str] | tuple[str, str, int, int]
 Items: TypeAlias = dict[ItemIdentity, tuple[str, str]]
+FileKey: TypeAlias = tuple[str, int, int]
+
+
+@dataclass
+class Coverage:
+    """Conservative filename matches, distinct from logical Google Photos items."""
+
+    matched_items: set[ItemIdentity] = field(default_factory=set)
+    ambiguous_items: set[ItemIdentity] = field(default_factory=set)
+    missing_items: set[ItemIdentity] = field(default_factory=set)
+    matched_files: set[FileKey] = field(default_factory=set)
+    unmatched_files: set[FileKey] = field(default_factory=set)
+    sidecars_without_local_match: int = 0
+    ambiguous_sidecars: int = 0
+    item_paths: dict[ItemIdentity, set[str]] = field(default_factory=dict)
+    directories: set[str] = field(default_factory=set)
+
+
 Inspection: TypeAlias = tuple[
     Items,
     dict[str, set[ItemIdentity]],
@@ -20,6 +39,7 @@ Inspection: TypeAlias = tuple[
     Counter[str],
     Counter[str],
     int,
+    Coverage,
 ]
 
 
@@ -41,9 +61,59 @@ def media_type(name: str) -> str:
 def capture_year(data: dict[str, Any]) -> str:
     try:
         timestamp = data["photoTakenTime"]["timestamp"]
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (str, int)):
+            return "Unknown"
+        if not re.fullmatch(r"[+-]?\d+", str(timestamp)) or int(timestamp) == 0:
+            return "Unknown"
         return str(datetime.fromtimestamp(int(timestamp), UTC).year)
     except (KeyError, TypeError, ValueError, OverflowError, OSError):
         return "Unknown"
+
+
+def google_photos_path(name: str) -> PurePosixPath | None:
+    parts = PurePosixPath(name).parts
+    if "Google Photos" not in parts:
+        return None
+    return PurePosixPath(*parts[parts.index("Google Photos") + 1 :])
+
+
+def match_media(
+    relative: PurePosixPath,
+    title: str,
+    filenames: dict[str, set[FileKey]],
+    stems: dict[tuple[str, str], set[FileKey]],
+) -> set[FileKey]:
+    """Match a sidecar locally, preserving duplicate suffixes and ambiguity."""
+    base = relative.name[:-5]  # Remove .json.
+    supplemental = re.fullmatch(r"(.*?)\.supplemental-metadata(?:\((\d+)\))?", base)
+    numbered = False
+    if supplemental:
+        base, number = supplemental.groups()
+        if number:
+            name = PurePosixPath(base)
+            base = f"{name.stem}({number}){name.suffix}"
+            numbered = True
+    direct = filenames.get(str(relative.parent / base), set())
+    if direct:
+        return direct
+    # Older exports can put the duplicate index after the extension.
+    duplicate = re.fullmatch(r"(.*)(\.[^.()]+)\((\d+)\)", base)
+    if duplicate:
+        stem, extension, number = duplicate.groups()
+        base = f"{stem}({number}){extension}"
+        numbered = True
+        direct = filenames.get(str(relative.parent / base), set())
+        if direct:
+            return direct
+    # Never let an indexed sidecar attach to the unindexed photo in its title.
+    if not numbered and not re.search(r"\(\d+\)", base) and title:
+        direct = filenames.get(str(relative.parent / title), set())
+        if direct:
+            return direct
+    # Extensionless titles can describe one or several different file formats.
+    if not PurePosixPath(base).suffix:
+        return stems.get((str(relative.parent), base), set())
+    return set()
 
 
 def inspect_archives(paths: list[Path]) -> Inspection:
@@ -55,23 +125,32 @@ def inspect_archives(paths: list[Path]) -> Inspection:
     warnings = Counter()
     seen_entries = set()
     sidecars = 0
-    file_types = defaultdict(set)
+    filenames: defaultdict[str, set[FileKey]] = defaultdict(set)
+    stems: defaultdict[tuple[str, str], set[FileKey]] = defaultdict(set)
+    files: set[FileKey] = set()
+    coverage = Coverage()
     # Index every part first: the JSON and its media may be in different ZIPs.
     for path in paths:
         with zipfile.ZipFile(path) as archive:
             for entry in archive.infolist():
-                name = PurePosixPath(entry.filename)
-                kind = media_type(name.name)
-                if not entry.is_dir() and kind != "Other":
-                    file_types[(str(name.parent), name.stem)].add(kind)
+                relative = google_photos_path(entry.filename)
+                if entry.is_dir() or relative is None or relative.suffix.lower() == ".json":
+                    continue
+                file_key = (str(relative), entry.CRC, entry.file_size)
+                files.add(file_key)
+                filenames[str(relative)].add(file_key)
+                stems[(str(relative.parent), relative.stem)].add(file_key)
+                coverage.directories.add(str(relative.parent))
+    years: defaultdict[ItemIdentity, set[str]] = defaultdict(set)
+    kinds: defaultdict[ItemIdentity, set[str]] = defaultdict(set)
+    matches: list[tuple[ItemIdentity, set[FileKey]]] = []
+    owners: defaultdict[FileKey, set[ItemIdentity]] = defaultdict(set)
     for path in paths:
         with zipfile.ZipFile(path) as archive:
             for entry in archive.infolist():
-                parts = PurePosixPath(entry.filename).parts
-                if entry.is_dir() or "Google Photos" not in parts:
+                relative = google_photos_path(entry.filename)
+                if entry.is_dir() or relative is None:
                     continue
-                # Only inspect files below Takeout's Google Photos directory.
-                relative = PurePosixPath(*parts[parts.index("Google Photos") + 1 :])
                 directory = str(relative.parent)
                 # Split exports can repeat a path; keep differing contents visible.
                 entry_key = (str(relative), entry.CRC, entry.file_size)
@@ -94,13 +173,15 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                 if not isinstance(data, dict):
                     warnings["Non-object JSON files (skipped)"] += 1
                     continue
-                # Album metadata has a title but no media capture metadata.
-                if relative.name == "metadata.json" and "photoTakenTime" not in data:
-                    title = data.get("title")
+                # Accept both current metadata.json and older albumData wrappers.
+                album = data.get("albumData")
+                is_media = any(key in data for key in ("photoTakenTime", "creationTime", "url"))
+                if isinstance(album, dict) or (relative.name == "metadata.json" and not is_media):
+                    title = (album if isinstance(album, dict) else data).get("title")
                     album_titles[directory] = title if isinstance(title, str) else directory
                     memberships.setdefault(directory, set())  # Include empty albums.
                     continue
-                if not any(key in data for key in ("photoTakenTime", "creationTime", "url")):
+                if not is_media:
                     warnings["Unrecognised JSON files (skipped)"] += 1
                     continue
                 sidecars += 1
@@ -111,27 +192,43 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                     identity = ("path", str(relative), entry.CRC, entry.file_size)
                     warnings["Media JSON without a Google Photos ID (counted separately)"] += 1
                 title = data.get("title")
-                kind = media_type(title if isinstance(title, str) else "")
-                if kind == "Other":
-                    base = re.sub(r"(?:\.supplemental-metadata)?\.json$", "", relative.name)
-                    candidates = set()
-                    for stem in (title, base):
-                        if isinstance(stem, str):
-                            candidates.update(
-                                file_types.get(
-                                    (str(PurePosixPath(entry.filename).parent), stem), set()
-                                )
-                            )
-                    if len(candidates) == 1:
-                        kind = candidates.pop()
-                year = capture_year(data)
-                if identity in items:
-                    if items[identity] != (year, kind):
-                        warnings["Repeated IDs with conflicting year/type (first value used)"] += 1
-                else:
-                    items[identity] = (year, kind)
+                title = title if isinstance(title, str) else ""
+                candidates = match_media(relative, title, filenames, stems)
+                matches.append((identity, candidates))
+                if len(candidates) == 1:
+                    owners[next(iter(candidates))].add(identity)
+                candidate_types = {media_type(key[0]) for key in candidates} - {"Other"}
+                kind = media_type(title)
+                if len(candidate_types) == 1:
+                    kind = next(iter(candidate_types))
+                years[identity].add(capture_year(data))
+                kinds[identity].add(kind)
+                coverage.item_paths.setdefault(identity, set()).add(str(relative))
                 memberships[directory].add(identity)
-    return items, memberships, album_titles, raw_files, warnings, sidecars
+
+    for identity in years:
+        known_years = years[identity] - {"Unknown"}
+        known_kinds = kinds[identity] - {"Other"}
+        year = next(iter(known_years)) if len(known_years) == 1 else "Unknown"
+        kind = next(iter(known_kinds)) if len(known_kinds) == 1 else "Other"
+        items[identity] = (year, kind)
+        if len(known_years) > 1:
+            warnings["IDs with conflicting capture years (reported as Unknown)"] += 1
+        if len(known_kinds) > 1:
+            warnings["IDs with conflicting media types (reported as Other)"] += 1
+    for identity, candidates in matches:
+        if len(candidates) == 1 and len(owners[next(iter(candidates))]) == 1:
+            coverage.matched_items.add(identity)
+            coverage.matched_files.update(candidates)
+        elif candidates:
+            coverage.ambiguous_items.add(identity)
+            coverage.ambiguous_sidecars += 1
+        else:
+            coverage.sidecars_without_local_match += 1
+    coverage.ambiguous_items -= coverage.matched_items
+    coverage.missing_items = set(items) - coverage.matched_items - coverage.ambiguous_items
+    coverage.unmatched_files = files - coverage.matched_files
+    return items, memberships, album_titles, raw_files, warnings, sidecars, coverage
 
 
 def counts(identities: Iterable[ItemIdentity], items: Items) -> Counter[str]:
@@ -160,10 +257,13 @@ def main(argv: list[str] | None = None) -> None:
         epilog="Pass all ZIP parts from ONE person's export together. Requires Python 3 only.",
     )
     parser.add_argument("archives", nargs="+", type=Path, metavar="ZIP")
+    parser.add_argument(
+        "--details", action="store_true", help="List unresolved sidecars and unpaired file entries"
+    )
     args = parser.parse_args(argv)
     paths = list(dict.fromkeys(path.expanduser().resolve() for path in args.archives))
     try:
-        items, memberships, titles, raw, warnings, sidecars = inspect_archives(paths)
+        items, memberships, titles, raw, warnings, sidecars, coverage = inspect_archives(paths)
     except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
         parser.exit(2, f"Error reading Takeout: {error}\n")
     if not items and not raw and not titles:
@@ -176,6 +276,7 @@ def main(argv: list[str] | None = None) -> None:
     print("Years use photoTakenTime in UTC; missing/invalid dates are Unknown.")
     print("These are metadata counts, not checksums or visually deduplicated counts.")
     print("Live Photo clips, edits and files without JSON may add extra file entries.")
+    print("Conflicting capture years are Unknown; conflicting media types are Other.")
 
     by_year = defaultdict(Counter)
     for year, kind in items.values():
@@ -184,31 +285,70 @@ def main(argv: list[str] | None = None) -> None:
     print_table("Year", [(year, by_year[year]) for year in sorted(by_year)])
     print_table("", [("TOTAL", counts(items, items))])
 
-    # A folder with album metadata is an album even if its name resembles a year folder.
-    albums = {
+    # Confirmed albums need album metadata; folder-only guesses stay separate.
+    inferred_albums = {
         directory
-        for directory in memberships
-        if directory in titles
-        or (
-            directory != "."
-            and directory not in {"Archive", "Trash", "Failed videos"}
-            and not re.fullmatch(r"Photos from \d{4}", directory)
-        )
+        for directory in set(memberships) | coverage.directories
+        if directory not in titles
+        and directory != "."
+        and directory not in {"Archive", "Trash", "Failed videos"}
+        and not re.fullmatch(r"Photos from \d{4}", directory)
     }
-    title_counts = Counter(titles.get(directory, directory) for directory in albums)
+    title_counts = Counter(titles.values())
     rows = []
-    for directory in albums:
-        title = titles.get(directory, directory)
+    for directory, title in titles.items():
         if title_counts[title] > 1:
             title = f"{title} [folder: {directory}]"
         rows.append((title, counts(memberships[directory], items)))
-    print(f"\nBy album ({len(albums):,} albums; one item can belong to several)")
+    print(f"\nBy album ({len(titles):,} confirmed by album metadata; items can belong to several)")
     print_table("Album", sorted(rows, key=lambda row: row[0].casefold()))
+    if inferred_albums:
+        print("\nPossible album folders (no album metadata; counts describe JSON items only)")
+        print_table(
+            "Folder",
+            [
+                (name, counts(memberships.get(name, set()), items))
+                for name in sorted(inferred_albums)
+            ],
+        )
+
+    print("\nMetadata-to-file coverage (filename matches, not media-content validation)")
+    print(
+        f"Items with a confirmed media file in at least one folder: {len(coverage.matched_items):,}"
+    )
+    print(f"Items with only ambiguous media matches: {len(coverage.ambiguous_items):,}")
+    print(f"Items without a media filename match: {len(coverage.missing_items):,}")
+    print(
+        f"Sidecars without a match in their own folder: {coverage.sidecars_without_local_match:,}"
+    )
+    print(f"Sidecars with ambiguous matches: {coverage.ambiguous_sidecars:,}")
+    print("A missing local match can be covered by another album/year copy with the same ID.")
 
     print("\nZIP file inventory (includes album copies and companion files)")
     print_table("Files", [("Media", Counter({k: raw[k] for k in ("Photos", "Videos")}))])
     print(f"Other non-JSON file entries: {raw['Other']:,}")
-    print("Files without usable JSON are included only in the ZIP inventory.")
+    print_table(
+        "Unpaired files",
+        [("No confirmed sidecar", Counter(media_type(key[0]) for key in coverage.unmatched_files))],
+    )
+    print("Unpaired files can include edits, Live Photo clips, ambiguous matches or missing JSON.")
+    print("They are not added to metadata year/album counts or assumed to be duplicates.")
+    if coverage.missing_items or coverage.ambiguous_items or coverage.unmatched_files:
+        print("Use --details to list unresolved sidecars and unpaired file entries.")
+    if args.details:
+        for label, identities in (
+            ("Missing media match", coverage.missing_items),
+            ("Ambiguous media match", coverage.ambiguous_items),
+        ):
+            for name in sorted(
+                {name for identity in identities for name in coverage.item_paths[identity]}
+            ):
+                print(f"{label}: {json.dumps(name, ensure_ascii=True)}")
+        for name, crc, size in sorted(coverage.unmatched_files):
+            print(
+                f"Unpaired file: {json.dumps(name, ensure_ascii=True)} "
+                f"(size={size}, CRC32={crc:08x})"
+            )
     if warnings:
         print("\nWarnings")
         for message, number in sorted(warnings.items()):
