@@ -109,7 +109,8 @@ uv run --locked ruff format .          # Apply formatting
 
 Checks include:
 
-- Unit tests, plus an extraction integration test when `immich-go` is installed.
+- Unit tests and Hypothesis property tests on synthetic archives.
+- Extraction integration test when `immich-go` is installed.
 - Ruff lint and formatting checks.
 - Mypy type checking for the scripts and shared modules.
 - Installed-command `--help` smoke checks.

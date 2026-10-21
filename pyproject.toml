@@ -12,6 +12,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.5",
     "mypy>=2.4.0",
     "ruff==0.14.1",
 ]
