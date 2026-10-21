@@ -175,7 +175,11 @@ class FolderUploadTests(unittest.TestCase):
         alias = self.root / "source-alias"
         alias.symlink_to(self.folder, target_is_directory=True)
         for log in (self.folder / "new.log", self.media, alias / "new.log", self.config, self.log):
-            with self.subTest(log=log), patch.object(folder_upload.subprocess, "run") as run:
+            with (
+                self.subTest(log=log),
+                patch.object(folder_upload.shutil, "which", return_value="immich-go"),
+                patch.object(folder_upload.subprocess, "run") as run,
+            ):
                 code, _, error = invoke(self.folder, "--config", self.config, "--log-file", log)
                 self.assertEqual(code, 1)
                 self.assertIn("Error:", error)
