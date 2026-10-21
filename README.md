@@ -74,6 +74,23 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
 - Credentials use a private temporary config. Ambient immich-go config and
   `IMMICH_GO_*` settings are ignored.
 
+## Upload an extracted folder
+
+Keep the extracted media and `.JSON` sidecars together. Preview the upload:
+
+```bash
+./immich-upload-folder /path/to/extracted-2022 \
+  --config ~/.config/immich-ctl/ACCOUNT.ini --dry-run
+```
+
+Remove `--dry-run` to upload. The command reads folders recursively and uses
+sidecar album associations, without creating albums from year/month folders.
+It disables overwrite, leaves server jobs running, and uses the same private
+credential handling as Takeout uploads. Dry runs contact the server; both modes
+write logs to `./logs/` or a new `--log-file FILE` outside the source folder.
+Source files are not modified. Metadata fidelity depends on immich-go and Immich;
+keep the original Takeout ZIPs.
+
 ## Test Immich credentials
 
 Create a private config from [account.example.ini](account.example.ini):

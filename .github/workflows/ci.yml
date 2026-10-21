@@ -55,6 +55,7 @@ jobs:
           uv run --locked immich-ping --help
           uv run --locked immich-describe-takeout --help
           uv run --locked immich-takeout --help
+          uv run --locked immich-upload-folder --help
 
   mutation-report:
     name: Mutation report (informational)
