@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: daily
+      time: "08:00"
+      timezone: Europe/London
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 4
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+      time: "08:00"
+      timezone: Europe/London
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 1
