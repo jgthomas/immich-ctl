@@ -7,6 +7,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - **Python 3.11+**. The Takeout script uses `datetime.UTC`, introduced in Python 3.11.
 - No third-party runtime packages.
 - For `immich-ping`: your Immich server URL and an API key with `user.read` permission.
+- For validation: an API key with `user.read`, `asset.read` and `album.read` permissions.
 - For extraction and upload: `immich-go` on PATH (tested with 0.32.0).
 - For development: [uv](https://docs.astral.sh/uv/).
 
@@ -91,6 +92,30 @@ write logs to `./logs/` or a new `--log-file FILE` outside the source folder.
 Source files are not modified. Metadata fidelity depends on immich-go and Immich;
 keep the original Takeout ZIPs.
 
+## Validate an extracted folder against Immich
+
+After uploading, check the extracted files against the same user's library:
+
+```bash
+./immich-validate-folder /path/to/extracted-2022 \
+  --config ~/.config/immich-ctl/ACCOUNT.ini
+```
+
+- Matches media by SHA-1 checksum, including archived and hidden assets; partner
+  copies and trashed/locked assets do not confirm an upload.
+- Compares explicit JSON capture dates, descriptions, GPS (within 0.00001 degrees),
+  favourite/archive flags and album memberships. Omitted values are not inferred.
+- Reports missing files, ambiguous matches, differences and incomplete checks.
+  Unsupported metadata (including tags), XMP, unreadable sidecars and skipped files
+  cannot establish complete validation. Album names are checked; duplicate names
+  cannot identify a particular album, and extra memberships are allowed.
+- Add `--details` to list passing files too, or `--json` for the full report.
+  Exit codes: `0` all available checks passed, `2` findings/incomplete checks,
+  `1` operational error; interrupted runs return `130`.
+- Reads local files and contacts Immich without changing either. Metadata jobs
+  may need to finish before rerunning. This does not test playback, visual
+  duplicates, original downloads or backup restoration. Keep the Takeout ZIPs.
+
 ## Test Immich credentials
 
 Create a private config from [account.example.ini](account.example.ini):
@@ -119,9 +144,9 @@ All commands and subcommands support `--help`.
 From the repository root:
 
 ```bash
-uv sync --locked --dev --group mutation# Set up dependencies
+uv sync --locked --dev --group mutation # Set up dependencies
 make check                             # Run all checks
-uv run --locked ruff format .          # Apply formatting
+uv run --locked ruff format .           # Apply formatting
 ```
 
 Checks include:

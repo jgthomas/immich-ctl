@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Validate extracted media and JSON sidecars against Immich without changing either."""
+
+import sys
+
+from immich_ctl.folder_validate import main
+
+if __name__ == "__main__":
+    sys.exit(main())

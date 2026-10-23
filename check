@@ -9,7 +9,7 @@ uv run --locked --no-sync ruff check .
 uv run --locked --no-sync ruff format --check .
 uv run --locked --no-sync mypy
 
-for command in immich-ping immich-describe-takeout immich-takeout immich-upload-folder; do
+for command in immich-ping immich-describe-takeout immich-takeout immich-upload-folder immich-validate-folder; do
     uv run --locked --no-sync "$command" --help > /dev/null
 done
 
