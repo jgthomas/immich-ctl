@@ -221,6 +221,34 @@ class FolderValidationTests(unittest.TestCase):
         self.assertEqual(len([p for _, p, _ in self.calls if p == "/search/metadata"]), 3)
         self.assertEqual(len([p for _, p, _ in self.calls if p == "/assets/asset-1"]), 1)
 
+    def test_case_distinct_media_cannot_share_one_sidecar(self):
+        # Equal bytes let both files match the server, so sidecar checks must
+        # independently prevent a falsely complete result for the uppercase file.
+        (self.folder / "PHOTO.JPG").write_bytes(self.media.read_bytes())
+        code, output, _ = self.invoke("--json")
+        report = json.loads(output)
+        self.assertEqual(code, 2)
+        rows = {row["path"]: row for row in report["files"]}
+        self.assertEqual(rows["photo.jpg"]["status"], "ok")
+        self.assertEqual(rows["PHOTO.JPG"]["status"], "incomplete")
+        self.assertEqual(rows["PHOTO.JPG"]["checks"], 0)
+        self.assertEqual(report["warnings"], ["missing or ambiguous JSON sidecar: PHOTO.JPG"])
+
+    def test_case_distinct_media_use_their_own_sidecars_with_any_json_suffix_case(self):
+        (self.folder / "PHOTO.JPG").write_bytes(b"another photo")
+        uppercase_metadata = {"description": "Uppercase photo metadata"}
+        for suffix in (".json", ".JsOn", ".JSON"):
+            with self.subTest(suffix=suffix):
+                sidecar = self.folder / ("PHOTO.JPG" + suffix)
+                sidecar.write_text(json.dumps(uppercase_metadata))
+                media, warnings = validation.inspect_folder(self.folder)
+                self.assertEqual(warnings, [])
+                self.assertEqual(
+                    {path.name: metadata for path, metadata in media},
+                    {"photo.jpg": self.metadata, "PHOTO.JPG": uppercase_metadata},
+                )
+                sidecar.unlink()
+
     def test_symlinks_orphans_unknown_files_xmp_and_case_ambiguity_are_reported(self):
         (self.folder / "elsewhere.jpg").symlink_to(self.media)
         (self.folder / "alias").symlink_to(self.root, target_is_directory=True)

@@ -266,7 +266,9 @@ def inspect_folder(folder: Path) -> tuple[list[tuple[Path, dict[str, Any] | None
     )
     by_name: dict[tuple[Path, str], list[Path]] = defaultdict(list)
     for path in files:
-        by_name[path.parent, path.name.casefold()].append(path)
+        if path.suffix.casefold() == ".json":
+            # Preserve the media filename's case; only the sidecar extension varies.
+            by_name[path.parent, path.with_suffix("").name].append(path)
     for path in files:
         if path.is_symlink():
             warnings.append(f"symlink skipped: {path.relative_to(folder)}")
@@ -284,7 +286,7 @@ def inspect_folder(folder: Path) -> tuple[list[tuple[Path, dict[str, Any] | None
         if media_type(path.name) == "Other":
             warnings.append(f"unsupported file: {path.relative_to(folder)}")
             continue
-        sidecars = by_name[path.parent, (path.name + ".json").casefold()]
+        sidecars = by_name[path.parent, path.name]
         metadata = None
         if len(sidecars) != 1 or sidecars[0].is_symlink():
             warnings.append(f"missing or ambiguous JSON sidecar: {path.relative_to(folder)}")
