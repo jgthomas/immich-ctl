@@ -28,6 +28,21 @@ class Response(io.BytesIO):
     status = 200
 
 
+class BoundedResponse(Response):
+    """Fail if a reader can consume more than the limit plus one overflow byte."""
+
+    def __init__(self, payload, limit):
+        super().__init__(payload)
+        self.limit = limit
+        self.read_sizes = []
+
+    def read(self, size=-1):
+        if not isinstance(size, int) or not 0 < size <= self.limit + 1:
+            raise AssertionError(f"Unbounded or excessive read: {size}")
+        self.read_sizes.append(size)
+        return super().read(size)
+
+
 class FolderValidationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -273,6 +288,112 @@ class FolderValidationTests(unittest.TestCase):
         self.assertIn("No supported", error)
         self.assertEqual(self.calls.count(("GET", "/users/me", None)), 1)
 
+    def test_sidecar_size_boundary_uses_bounded_reads_and_rejects_valid_json_padding(self):
+        limit = 64
+        document = b'{"description":"photo"}'
+        original_open = Path.open
+        for size in (limit - 1, limit, limit + 1, limit * 2):
+            with self.subTest(size=size):
+                stream = BoundedResponse(document.ljust(size, b" "), limit)
+
+                def open_file(path, *args, stream=stream, **kwargs):
+                    return stream if path == self.sidecar else original_open(path, *args, **kwargs)
+
+                with (
+                    patch.object(validation, "JSON_LIMIT", limit),
+                    patch.object(Path, "open", autospec=True, side_effect=open_file),
+                ):
+                    media, warnings = validation.inspect_folder(self.folder)
+                self.assertTrue(stream.read_sizes)
+                if size <= limit:
+                    self.assertEqual(media, [(self.media, {"description": "photo"})])
+                    self.assertEqual(warnings, [])
+                else:
+                    self.assertEqual(media, [(self.media, None)])
+                    self.assertEqual(warnings, ["invalid or oversized JSON sidecar: photo.jpg"])
+
+    def test_xmp_does_not_hide_later_media(self):
+        (self.folder / "middle.XMP").write_text("unvalidated XMP")
+        (self.folder / "aaa.jpg").write_bytes(self.media.read_bytes())
+        (self.folder / "aaa.jpg.JSON").write_text(json.dumps(self.metadata))
+        media, warnings = validation.inspect_folder(self.folder)
+        self.assertEqual({path.name for path, _ in media}, {"aaa.jpg", "photo.jpg"})
+        self.assertEqual(warnings, ["XMP metadata not checked: middle.XMP"])
+
+    def test_asset_details_must_still_match_search_identity_owner_checksum_and_trash(self):
+        for change in (
+            {"id": "other"},
+            {"ownerId": "partner"},
+            {"checksum": base64.b64encode(b"other checksum").decode()},
+            {"isTrashed": True},
+        ):
+            with (
+                self.subTest(change=change),
+                patch.object(validation.Client, "matches", return_value=[self.asset]),
+                patch.object(
+                    validation.Client, "read", side_effect=[{"id": "me"}, {**self.asset, **change}]
+                ),
+                patch.object(validation.Client, "albums") as albums,
+            ):
+                code, output, error = self.invoke("--json")
+            self.assertEqual(code, 1)
+            self.assertEqual(output, "")
+            self.assertIn("Asset identity changed", error)
+            albums.assert_not_called()
+
+    def test_operational_errors_redact_credentials_on_stderr(self):
+        for error_type in (validation.ValidationError, OSError):
+            with (
+                self.subTest(error_type=error_type),
+                patch.object(
+                    validation.Client, "read", side_effect=error_type(f"Failed with key {self.key}")
+                ),
+            ):
+                code, output, error = self.invoke()
+            self.assertEqual(code, 1)
+            self.assertEqual(output, "")
+            self.assertIn("Failed with key [REDACTED]", error)
+            self.assertNotIn(self.key, error)
+
+    def test_text_report_includes_differences_unchecked_fields_and_warnings(self):
+        self.asset["exifInfo"]["description"] = "Changed"
+        self.metadata["tags"] = [{"value": "People/A"}]
+        self.sidecar.write_text(json.dumps(self.metadata))
+        (self.folder / "orphan.jpg.JSON").write_text("{}")
+        code, output, error = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertEqual(error, "")
+        self.assertIn("description differs", output)
+        self.assertIn("unsupported sidecar field: tags", output)
+        self.assertIn("orphan sidecar: orphan.jpg.JSON", output)
+        self.assertNotIn("null", output)
+
+    def test_config_is_required_before_any_server_request(self):
+        with (
+            patch.object(validation.Client, "read") as read,
+            redirect_stderr(io.StringIO()) as error,
+            self.assertRaises(SystemExit) as exit_error,
+        ):
+            script.main([str(self.folder)])
+        self.assertEqual(exit_error.exception.code, 2)
+        self.assertIn("--config", error.getvalue())
+        read.assert_not_called()
+
+    def test_positive_fractional_and_one_second_timeouts_reach_http_client(self):
+        for timeout in (0.25, 1, 1.5):
+            with self.subTest(timeout=timeout):
+                observed = []
+                original = self.respond
+
+                def respond(request, *, timeout, observed=observed, original=original):
+                    observed.append(timeout)
+                    return original(request, timeout=30)
+
+                with patch.object(self, "respond", side_effect=respond):
+                    code, _, error = self.invoke("--timeout", str(timeout))
+                self.assertEqual(code, 0, error)
+                self.assertEqual(observed, [timeout] * 6)
+
     def test_unreadable_directories_and_interrupts_cannot_report_success(self):
         def unreadable(folder, *, onerror, followlinks):
             self.assertIs(followlinks, False)
@@ -321,6 +442,87 @@ class FolderValidationTests(unittest.TestCase):
 class ApiTests(unittest.TestCase):
     def client(self):
         return validation.Client("https://example/api", "synthetic-key", 7)
+
+    def test_favourite_and_archive_flags_are_checked_independently(self):
+        for favorite in (False, True):
+            for archived in (False, True):
+                with self.subTest(favorite=favorite, archived=archived):
+                    expected = {"favorited": favorite, "archived": archived}
+                    asset = {"isFavorite": favorite, "isArchived": archived}
+                    self.assertEqual(validation.compare(expected, asset, set()), ([], [], 2))
+                    self.assertEqual(
+                        validation.compare(expected, {**asset, "isArchived": not archived}, set()),
+                        (["archived differs"], [], 2),
+                    )
+                    self.assertEqual(
+                        validation.compare(expected, {**asset, "isFavorite": not favorite}, set()),
+                        (["favorited differs"], [], 2),
+                    )
+
+    def test_http_size_boundary_uses_bounded_reads_and_rejects_valid_json_padding(self):
+        limit = 64
+        for size in (limit - 1, limit, limit + 1, limit * 2):
+            with self.subTest(size=size), patch.object(validation, "build_opener") as build:
+                response = BoundedResponse(b'{"id":"me"}'.ljust(size, b" "), limit)
+                build.return_value.open.return_value = response
+                with patch.object(validation, "RESPONSE_LIMIT", limit):
+                    if size <= limit:
+                        self.assertEqual(self.client().read("/users/me"), {"id": "me"})
+                    else:
+                        with self.assertRaisesRegex(validation.ValidationError, "exceeds"):
+                            self.client().read("/users/me")
+                self.assertTrue(response.read_sizes)
+
+    def test_pagination_rejects_each_inconsistency_before_reading_another_page(self):
+        checksum = hashlib.sha1(b"photo").hexdigest()
+        asset = {
+            "id": "one",
+            "ownerId": "me",
+            "checksum": base64.b64encode(bytes.fromhex(checksum)).decode(),
+        }
+        client = self.client()
+        for items, following in (([], "2"), ([asset], "1"), ([asset], "3"), ([asset], "invalid")):
+            response = {"assets": {"items": items, "nextPage": following}}
+            with (
+                self.subTest(items=items, next_page=following),
+                patch.object(client, "read", return_value=response) as read,
+            ):
+                with self.assertRaisesRegex(validation.ValidationError, "pagination"):
+                    client.matches(checksum, "me")
+                read.assert_called_once()
+
+    def test_gps_ranges_include_endpoints_and_reject_out_of_range_sidecars(self):
+        for field, limit in (("latitude", 90), ("longitude", 180)):
+            for sign in (-1, 1):
+                with self.subTest(field=field, sign=sign):
+                    endpoint = sign * limit
+                    self.assertEqual(
+                        validation.compare(
+                            {field: endpoint}, {"exifInfo": {field: endpoint}}, set()
+                        ),
+                        ([], [], 1),
+                    )
+                    outside = sign * (limit + 0.5)
+                    self.assertEqual(
+                        validation.compare({field: outside}, {"exifInfo": {field: outside}}, set()),
+                        ([], [f"invalid sidecar {field}"], 0),
+                    )
+                    self.assertEqual(
+                        validation.compare(
+                            {field: endpoint}, {"exifInfo": {field: outside}}, set()
+                        ),
+                        ([f"{field} differs"], [], 1),
+                    )
+        tolerance = 0.00001
+        for delta, differences in (
+            (tolerance, []),
+            (-tolerance, []),
+            (tolerance * 1.01, ["latitude differs"]),
+        ):
+            self.assertEqual(
+                validation.compare({"latitude": 0}, {"exifInfo": {"latitude": delta}}, set()),
+                (differences, [], 1),
+            )
 
     def test_comparison_tolerances_explicit_false_zero_and_invalid_values(self):
         metadata = {
