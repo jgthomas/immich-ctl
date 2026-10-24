@@ -17,6 +17,7 @@ from uuid import uuid4
 from immich_ctl.config import ConfigError, load_config
 from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
 from immich_ctl.takeout_audit import audit
+from immich_ctl.takeout_recover import RecoveryError, recover
 from immich_ctl.upload_output import run_upload
 
 
@@ -108,6 +109,14 @@ def query(paths: list[Path], selection: tuple[date, date], list_items: bool = Fa
     print("immich-go applies its own matching, deduplication and status filters when processing.")
 
 
+def log_path(action: str, path: Path | None) -> Path:
+    """Resolve the exact destination before validating or creating any log."""
+    if path is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = Path("logs") / f"takeout-{action}-{stamp}-{uuid4().hex[:8]}.log"
+    return path.expanduser().resolve()
+
+
 def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
     binary = shutil.which("immich-go")
     if binary is None:
@@ -124,11 +133,7 @@ def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
         if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
             raise TakeoutError("Extraction requires a new or empty --output directory.")
 
-    log = args.log_file
-    if log is None:
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        log = Path("logs") / f"takeout-{args.action}-{stamp}-{uuid4().hex[:8]}.log"
-    log = log.expanduser().resolve()
+    log = log_path(args.action, args.log_file)
     if log in paths or (args.action == "upload" and log == args.config.expanduser().resolve()):
         raise TakeoutError("The log path must be separate from archives and account config.")
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -195,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in (
         ("query", "Read-only metadata counts, albums and optional item list"),
         ("audit", "Read-only audit of numbered media and edited variants across the export"),
+        ("recover", "Recover missing numbered edits into a separate upload-ready folder"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
         ("upload", "Upload directly from the ZIPs using immich-go"),
     ):
@@ -213,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             metavar="DATES",
             help="Year, month, day, or inclusive range: 2022; 2022-07-15; 2020,2022",
         )
+        if name == "recover":
+            sub.add_argument("--extracted", required=True, type=Path, metavar="DIRECTORY")
         if name == "query":
             sub.add_argument("--list", dest="list_items", action="store_true", help="List sidecars")
         else:
@@ -236,6 +244,35 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "audit":
             audit(paths, details=args.details, json_output=args.json)
             return 0
+        if args.action == "recover":
+            args.log_file = log_path(args.action, args.log_file)
+            log = args.log_file
+            destination = args.output.expanduser().resolve()
+            for folder in (args.extracted.expanduser().resolve(), destination):
+                if log == folder or folder in log.parents:
+                    raise RecoveryError(
+                        "The recovery log must be outside source and output folders."
+                    )
+            manifest = destination.with_name(destination.name + ".manifest.json")
+            if log == manifest or manifest in log.parents:
+                raise RecoveryError("The recovery log must be separate from the recovery manifest.")
+            if log in paths:
+                raise RecoveryError("The recovery log must be separate from source ZIPs.")
+
+            def extract_recovery(archives: list[Path], output: Path) -> int:
+                options = argparse.Namespace(**vars(args))
+                options.action, options.output = "extract", output
+                return run_immich_go(options, archives)
+
+            return recover(
+                paths,
+                args.extracted,
+                args.output,
+                args.date_range,
+                extract_recovery,
+                dry_run=args.dry_run,
+                include_partner=args.include_partner,
+            )
         if args.action == "query" or (args.action == "extract" and args.dry_run):
             query(paths, args.date_range, getattr(args, "list_items", False))
             if args.action == "extract":
@@ -251,7 +288,15 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    except (TakeoutError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
+    except (
+        TakeoutError,
+        RecoveryError,
+        OSError,
+        ValueError,
+        zipfile.BadZipFile,
+        RuntimeError,
+        NotImplementedError,
+    ) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

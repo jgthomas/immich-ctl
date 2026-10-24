@@ -8,7 +8,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - No third-party runtime packages.
 - For `immich-ping`: your Immich server URL and an API key with `user.read` permission.
 - For validation: an API key with `user.read`, `asset.read` and `album.read` permissions.
-- For extraction and upload: `immich-go` on PATH (tested with 0.32.0).
+- For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
 - For development: [uv](https://docs.astral.sh/uv/).
 
 ## Describe a Takeout export
@@ -98,6 +98,30 @@ matching issue, not confirmed extraction failures. Literal parentheses are
 preserved; numbering does not prove duplication. Other edit suffixes are not
 recognised. Album-folder copies count separately; repeated ZIP entries count once.
 The audit reads filenames and JSON only, without extraction or server access.
+
+## Recover omitted numbered edits
+
+Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
+
+```bash
+./immich-takeout recover --date-range 2022 --extracted /path/to/extracted-2022 \
+  --output /path/to/recovered-2022 --dry-run ~/Downloads/takeout-EXPORT-*.zip
+```
+
+- Remove `--dry-run` to create a **new**, separate upload-ready folder and a sibling
+  `recovered-2022.manifest.json` recording source paths, associations and checksums.
+- Recovers missing numbered `-edited` variants only when an exact original has
+  unambiguous metadata and a capture date in the selected range. Conflicting
+  metadata stays unresolved. Trashed and partner items are excluded; use
+  `--include-partner` to include partner items.
+- Uses immich-go to generate `.JSON` sidecars, then verifies recovered bytes,
+  capture dates and album titles before publishing. Recovery filenames include a
+  checksum prefix to avoid collisions with originals.
+- Matching bytes confirm local file coverage only, not metadata or album coverage.
+  Other missing files and unclear associations still require review.
+- Dry runs write nothing and need no immich-go. Recovery contacts no server and
+  leaves source ZIPs and the existing extraction unchanged. Upload and validate
+  the recovery folder using the commands below.
 
 ## Upload an extracted folder
 
