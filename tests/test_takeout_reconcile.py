@@ -47,7 +47,7 @@ class ReconcileTests(unittest.TestCase):
         target = folder / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(contents)
-        Path(str(target) + ".JSON").write_text("{}")
+        Path(str(target) + ".JSON").write_text(json.dumps({"dateTaken": "2023-01-01T00:00:00Z"}))
         return target
 
     def report(self, *folders):
@@ -83,7 +83,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(combined["selected"]["present"], 2)
         self.assertEqual(combined["selected"]["missing"], 0)
         self.assertEqual(combined["selected"]["unique_checksums"], 2)
-        self.assertFalse(combined["metadata_and_albums_validated"])
+        self.assertTrue(combined["metadata_and_albums_validated"])
 
     def test_album_copies_count_as_source_files_and_conflicts_require_review(self):
         source = self.entries["Photos from 2023/photo.jpg.supplemental-metadata(1).json"]
@@ -95,7 +95,10 @@ class ReconcileTests(unittest.TestCase):
             }
         )
         self.write()
-        self.local_file(self.extracted, "original.jpg", b"original")
+        original = self.local_file(self.extracted, "original.jpg", b"original")
+        Path(str(original) + ".JSON").write_text(
+            json.dumps({"dateTaken": "2023-01-01T00:00:00Z", "albums": [{"title": "Trip"}]})
+        )
         report = self.report()
         self.assertEqual(report["selected"]["files"], 3)
         self.assertEqual(report["selected"]["unique_checksums"], 2)
@@ -124,7 +127,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(rows["Photos from 2023/photo(1).jpg"]["albums"], [])
         self.assertEqual(rows["Photos from 2023/photo-edited(1).jpg"]["albums"], [])
 
-    def test_unsupported_files_are_skipped_without_hiding_later_media(self):
+    def test_unclassified_files_are_reported_without_hiding_later_media(self):
         self.entries = {"000-first.bin": b"unsupported"} | self.entries
         self.write()
         report = self.report()
@@ -132,6 +135,12 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(report["selected"]["files"], 2)
         self.assertEqual(report["selected"]["missing"], 2)
         self.assertEqual(report["export_exception"]["files"], 0)
+        self.assertEqual(
+            [row["path"] for row in report["unclassified_source_files"]], ["000-first.bin"]
+        )
+        self.assertEqual(
+            report["warnings"], {"Unclassified source files (not checked as media)": 1}
+        )
         self.assertTrue(all(not row["path"].endswith(".bin") for row in report["files"]))
 
     def test_report_provenance_and_multiple_local_matches_are_complete_and_ordered(self):
@@ -173,7 +182,8 @@ class ReconcileTests(unittest.TestCase):
 
         for size in (JSON_LIMIT, JSON_LIMIT + 1):
             with self.subTest(size=size):
-                payload = b'{"padding":"' + b"x" * (size - len(b'{"padding":""}')) + b'"}'
+                base = b'{"dateTaken":"2023-01-01T00:00:00Z","padding":""}'
+                payload = base[:-2] + b"x" * (size - len(base)) + b'"}'
                 Path(str(media) + ".JSON").write_bytes(payload)
                 with patch.object(Path, "open", autospec=True, side_effect=bounded_open):
                     report = self.report()
@@ -377,7 +387,7 @@ class ReconcileTests(unittest.TestCase):
                 self.assertEqual(report["selected"]["files"], 2)
                 self.assertFalse(report["metadata_and_albums_validated"])
             else:
-                self.assertIn("JSON fields unverified", out)
+                self.assertIn("Bytes and supported metadata verified", out)
                 self.assertIn("Export-wide exceptions", out)
                 self.assertIn('"path": "Photos from 2023/photo-edited(1).jpg"', out)
                 self.assertEqual(
@@ -462,7 +472,7 @@ class ReconcileTests(unittest.TestCase):
         report = self.report(self.extracted, self.recovery)
         self.assertEqual(report["selected"]["present"], 2)
         self.assertEqual(report["selected"]["missing"], 0)
-        self.assertFalse(report["metadata_and_albums_validated"])
+        self.assertTrue(report["metadata_and_albums_validated"])
 
 
 class ReconcileProperties(unittest.TestCase):

@@ -15,6 +15,7 @@ from typing import IO, Any
 
 from immich_ctl.takeout import FileKey, google_photos_path, inspect_archives, media_type
 from immich_ctl.takeout_audit import numbered_media
+from immich_ctl.takeout_metadata import album_payloads, differences, expectation
 
 
 class RecoveryError(Exception):
@@ -164,6 +165,19 @@ def recover(
             row["albums"] = sorted(
                 {title for d, title in titles.items() if owner in memberships[d]}
             )
+            try:
+                row["album_metadata"] = album_payloads(
+                    coverage,
+                    [
+                        d
+                        for d in set(titles) | coverage.invalid_album_metadata
+                        if owner in memberships.get(d, set())
+                    ],
+                )
+                expectation(data, row["album_metadata"])
+            except ValueError as error:
+                row["reason"] = str(error)
+                continue
             if checksum in existing:
                 row["status"] = "covered"
                 row["extracted_paths"] = sorted(existing[checksum])
@@ -182,11 +196,24 @@ def recover(
                     row["status"] = "unresolved"
                     row["reason"] = "Identical media bytes have differing source metadata"
             else:
+                combined: dict[str, dict[str, Any]] = {}
+                conflict = False
+                for row in copies:
+                    for title, album in row["album_metadata"].items():
+                        if title in combined and combined[title] != album:
+                            conflict = True
+                        combined[title] = album
+                if conflict:
+                    for row in copies:
+                        row["status"] = "unresolved"
+                        row["reason"] = "Conflicting source album metadata"
+                    continue
                 name = min(row["recovery_name"] for row in copies)
                 albums = sorted({album for row in copies for album in row["albums"]})
                 for row in copies:
                     row["recovery_name"] = name
                     row["albums"] = albums
+                    row["album_metadata"] = combined
         counts = Counter(row["status"] for row in rows)
         print("Numbered-edit recovery (local files only)")
         print(
@@ -229,7 +256,9 @@ def recover(
                     for album_index, title in enumerate(row["albums"] or [None]):
                         prefix = f"Takeout/Google Photos/recovery-{index}-{album_index}/"
                         if title is not None:
-                            target.writestr(prefix + "metadata.json", json.dumps({"title": title}))
+                            target.writestr(
+                                prefix + "metadata.json", json.dumps(row["album_metadata"][title])
+                            )
                         with (
                             archive.open(entry) as source,
                             target.open(
@@ -267,6 +296,13 @@ def recover(
                     if not set(row["albums"]) <= generated_albums:
                         raise RecoveryError(
                             "Generated metadata is missing expected album associations."
+                        )
+                    issues = differences(
+                        expectation(payloads[row["path"]], row["album_metadata"]), data
+                    )
+                    if issues:
+                        raise RecoveryError(
+                            "Generated recovery metadata differs from source: " + "; ".join(issues)
                         )
             # Reserve destinations exclusively; remove our partial output if publishing fails.
             with manifest.open("x", encoding="utf-8") as stream:

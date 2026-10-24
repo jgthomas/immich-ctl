@@ -392,6 +392,49 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse(self.output.exists())
             self.assertFalse(self.manifest.exists())
 
+    def test_generated_metadata_loss_prevents_publication(self):
+        data = self.entries["Photos from 2023/photo.jpg.supplemental-metadata(1).json"]
+        data["description"] = "Must survive recovery"
+        self.write()
+        with patch.object(takeout, "run_immich_go", side_effect=self.fake_extract):
+            code, _, error = self.invoke()
+        self.assertEqual(code, 1)
+        self.assertIn("description differs from source", error)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.manifest.exists())
+
+    def test_conflicting_album_enrichments_remain_unresolved_without_tool_calls(self):
+        data = self.entries["Photos from 2023/photo.jpg.supplemental-metadata(1).json"]
+        album = {"title": "Trip", "enrichments": [{"narrativeEnrichment": {"text": "First"}}]}
+        self.entries.update(
+            {
+                "Trip/metadata.json": album,
+                "Trip/photo(1).jpg": b"original",
+                "Trip/photo.jpg.supplemental-metadata(1).json": data,
+            }
+        )
+        self.write()
+        part = self.root / "part2.zip"
+        write_zip(
+            part,
+            {
+                "Trip/metadata.json": {
+                    "title": "Trip",
+                    "enrichments": [
+                        {"narrativeEnrichment": {"text": "Conflicting"}},
+                    ],
+                }
+            },
+        )
+        with patch.object(takeout, "run_immich_go") as run:
+            code, output, error = self.invoke("--dry-run", part)
+        self.assertEqual(code, 0, error)
+        self.assertIn("unresolved: 1", output)
+        self.assertIn("conflicting source album metadata", output)
+        run.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.manifest.exists())
+
     def test_tool_failure_and_false_success_do_not_publish(self):
         def wrong_output(args, paths):
             args.output.mkdir()
@@ -504,7 +547,24 @@ class RecoveryTests(unittest.TestCase):
             }
         )
         for album in ("Trip", "Family"):
-            self.entries[album + "/metadata.json"] = {"title": album}
+            self.entries[album + "/metadata.json"] = {
+                "title": album,
+                "enrichments": [
+                    {"narrativeEnrichment": {"text": "Our " + album}},
+                    {
+                        "locationEnrichment": {
+                            "location": [
+                                {
+                                    "name": "London",
+                                    "description": "UK",
+                                    "latitudeE7": 515000000,
+                                    "longitudeE7": -1200000,
+                                }
+                            ]
+                        }
+                    },
+                ],
+            }
             self.entries[album + "/photo(1).jpg"] = b"original"
             self.entries[album + "/photo.jpg.supplemental-metadata(1).json"] = base
         self.write()
@@ -528,6 +588,10 @@ class RecoveryTests(unittest.TestCase):
         }.items():
             self.assertEqual(metadata[field], expected)
         self.assertEqual({a["title"] for a in metadata["albums"]}, {"Trip", "Family"})
+        for album in metadata["albums"]:
+            self.assertEqual(album["description"], "Our " + album["title"] + "\nLondon - UK")
+            self.assertEqual(album["latitude"], 51.5)
+            self.assertEqual(album["longitude"], -0.12)
         from immich_ctl.folder_validate import inspect_folder
 
         files, warnings = inspect_folder(self.output)

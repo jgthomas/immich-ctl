@@ -132,3 +132,46 @@ jobs:
             mutants/
           if-no-files-found: warn
           retention-days: 14
+
+  immich-go-integration:
+    name: immich-go 0.32.0 integrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.13.3"
+          python-version: "3.14"
+          enable-cache: true
+      - name: Install project and development dependencies
+        run: uv sync --locked --dev
+      - name: Install pinned immich-go
+        shell: bash
+        run: |
+          download="$RUNNER_TEMP/immich-go-download"
+          mkdir -p "$download" "$RUNNER_TEMP/immich-go-bin"
+          cd "$download"
+          base=https://github.com/simulot/immich-go/releases/download/v0.32.0
+          curl --fail --location --retry 3 "$base/immich-go_Linux_x86_64.tar.gz" -o immich-go_Linux_x86_64.tar.gz
+          curl --fail --location --retry 3 "$base/checksums.txt" -o checksums.txt
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          name = "immich-go_Linux_x86_64.tar.gz"
+          expected = dict(line.split()[::-1] for line in Path("checksums.txt").read_text().splitlines())[name]
+          actual = hashlib.sha256(Path(name).read_bytes()).hexdigest()
+          if actual != expected:
+              raise SystemExit("immich-go release checksum mismatch")
+          PY
+          tar -xzf immich-go_Linux_x86_64.tar.gz -C "$RUNNER_TEMP/immich-go-bin" immich-go
+          echo "$RUNNER_TEMP/immich-go-bin" >> "$GITHUB_PATH"
+      - name: Require upstream binary and run integrations
+        run: |
+          immich-go version
+          uv run --locked python -m unittest discover -v

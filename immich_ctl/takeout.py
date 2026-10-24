@@ -32,6 +32,8 @@ class Coverage:
     item_paths: dict[ItemIdentity, set[str]] = field(default_factory=dict)
     directories: set[str] = field(default_factory=set)
     capture_times: dict[ItemIdentity, set[datetime]] = field(default_factory=dict)
+    album_metadata: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    invalid_album_metadata: set[str] = field(default_factory=set)
 
 
 Inspection: TypeAlias = tuple[
@@ -46,9 +48,14 @@ Inspection: TypeAlias = tuple[
 
 
 PHOTO_EXTENSIONS = set(
-    "jpg jpeg heic heif png gif webp avif bmp tif tiff dng raw cr2 cr3 nef arw raf orf rw2 pef srw".split()
+    # immich-go 0.32.0's supported.go, plus previously recognised formats.
+    "3fr ari arw avif bmp cap cin cr2 cr3 crw dcr dng erf fff gif heic heif hif iiq insp "
+    "jpe jpeg jpg jxl k25 kdc mrw nef orf ori pef png psd raf raw rw2 rwl sr2 srf srw "
+    "tif tiff webp x3f".split()
 )
-VIDEO_EXTENSIONS = set("mp4 mov m4v avi mpg mpeg 3gp 3g2 mts m2ts mkv webm wmv mod tod".split())
+VIDEO_EXTENSIONS = set(
+    "mp4 mov m4v avi mpg mpeg 3gp 3g2 mts m2ts mkv webm wmv mod tod flv insv".split()
+)
 
 
 def media_type(name: str) -> str:
@@ -131,6 +138,8 @@ def record_failed_sidecar(
     stems: dict[tuple[str, str], set[FileKey]],
 ) -> None:
     """Retain filename-based evidence without inventing an owner or using a JSON title."""
+    if relative.name == "metadata.json":
+        coverage.invalid_album_metadata.add(str(relative.parent))
     for candidate in match_media(relative, "", filenames, stems):
         coverage.failed_sidecars.setdefault(candidate, set()).add(str(relative))
 
@@ -199,7 +208,11 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                 album = data.get("albumData")
                 is_media = any(key in data for key in ("photoTakenTime", "creationTime", "url"))
                 if isinstance(album, dict) or (relative.name == "metadata.json" and not is_media):
-                    title = (album if isinstance(album, dict) else data).get("title")
+                    payload = album if isinstance(album, dict) else data
+                    versions = coverage.album_metadata.setdefault(directory, [])
+                    if payload not in versions:
+                        versions.append(payload)
+                    title = payload.get("title")
                     album_titles[directory] = title if isinstance(title, str) else directory
                     memberships.setdefault(directory, set())  # Include empty albums.
                     continue

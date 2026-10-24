@@ -17,6 +17,7 @@ from immich_ctl.takeout import (
     inspect_archives,
     media_type,
 )
+from immich_ctl.takeout_metadata import album_payloads, differences, expectation
 from immich_ctl.takeout_recover import digest, folder_checksums
 
 JSON_LIMIT = 8 * 1024 * 1024
@@ -88,8 +89,12 @@ def source_rows(
     return rows, outside
 
 
-def sidecar_state(media: Path, cache: dict[Path, dict[str, list[Path]]]) -> str:
-    """Check sidecar availability and JSON shape, without claiming field fidelity."""
+def sidecar_state(
+    media: Path,
+    cache: dict[Path, dict[str, list[Path]]],
+    values: dict[Path, dict[str, Any]] | None = None,
+) -> str:
+    """Read a bounded native sidecar, retaining its data for source comparison."""
     if media.parent not in cache:
         names: defaultdict[str, list[Path]] = defaultdict(list)
         for path in media.parent.iterdir():
@@ -107,7 +112,11 @@ def sidecar_state(media: Path, cache: dict[Path, dict[str, list[Path]]]) -> str:
         value = json.loads(payload) if len(payload) <= JSON_LIMIT else None
     except (ValueError, UnicodeError):
         return "invalid"
-    return "present_unverified" if isinstance(value, dict) else "invalid"
+    if isinstance(value, dict):
+        if values is not None:
+            values[media] = value
+        return "present_unverified"
+    return "invalid"
 
 
 def reconcile_report(
@@ -123,6 +132,7 @@ def reconcile_report(
         raise ValueError("Reconciliation requires at least one --extracted folder.")
     local: defaultdict[str, list[dict[str, str]]] = defaultdict(list)
     sidecars: dict[Path, dict[str, list[Path]]] = {}
+    local_metadata: dict[Path, dict[str, Any]] = {}
     for folder in folders:
         for checksum, relatives in folder_checksums(folder).items():
             for local_relative in relatives:
@@ -130,7 +140,7 @@ def reconcile_report(
                     {
                         "folder": str(folder),
                         "path": local_relative,
-                        "sidecar": sidecar_state(folder / local_relative, sidecars),
+                        "sidecar": sidecar_state(folder / local_relative, sidecars, local_metadata),
                     }
                 )
     _, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
@@ -139,6 +149,13 @@ def reconcile_report(
         for name in item_paths:
             sidecar_owners[name].add(owner)
     rows, outside = source_rows(coverage, selection)
+    unclassified = [
+        {"path": key[0], "crc32": f"{key[1]:08x}", "size": key[2]}
+        for key in sorted(coverage.matched_files | coverage.unmatched_files)
+        if media_type(key[0]) == "Other"
+    ]
+    if unclassified:
+        warnings["Unclassified source files (not checked as media)"] += len(unclassified)
     missing_items = []
     for owner in sorted(coverage.missing_items):
         times = coverage.capture_times[owner]
@@ -154,6 +171,8 @@ def reconcile_report(
     wanted = {sidecar for row in rows for sidecar in row["sidecars"]}
     metadata: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     invalid: set[str] = set()
+    expectations: dict[str, dict[str, Any]] = {}
+    album_sources: dict[str, dict[str, dict[str, Any]]] = {}
     with ExitStack() as stack:
         media: dict[FileKey, tuple[zipfile.ZipFile, zipfile.ZipInfo]] = {}
         for path in paths:
@@ -196,9 +215,18 @@ def reconcile_report(
             )
             row["content"] = "present" if row["local_matches"] else "missing"
             owners = set().union(*(sidecar_owners[name] for name in row["sidecars"]))
-            row["albums"] = sorted(
-                {title for directory, title in titles.items() if owners & memberships[directory]}
-            )
+            directories = [
+                directory
+                for directory in set(titles) | coverage.invalid_album_metadata
+                if owners & memberships.get(directory, set())
+            ]
+            row["albums"] = sorted({titles.get(d, d) for d in directories})
+            try:
+                album_sources[row["path"]] = album_payloads(coverage, directories)
+                if len(owners) == 1 and versions and not row["issues"]:
+                    expectations[row["path"]] = expectation(versions[0], album_sources[row["path"]])
+            except ValueError as error:
+                row["issues"].append(str(error))
             data = versions[0] if versions else {}
             origin = data.get("googlePhotosOrigin", {})
             excluded = bool(data.get("trashed")) or (
@@ -211,6 +239,56 @@ def reconcile_report(
             row["status"] = (
                 "needs_review" if row["issues"] else "excluded" if excluded else row["content"]
             )
+    # Identical media may legitimately occur in several albums. Require compatible
+    # source fields and combine memberships before comparing every local copy.
+    groups: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[row["sha256"]].append(row)
+    for copies in groups.values():
+        if any(row["issues"] for row in copies) and len(copies) > 1:
+            for row in copies:
+                if not row["issues"]:
+                    row["issues"].append("identical media has unresolved source metadata")
+        candidates = [expectations[r["path"]] for r in copies if r["path"] in expectations]
+        merged: dict[str, Any] = {}
+        for candidate in candidates:
+            for field, value in candidate.items():
+                if field == "albums":
+                    continue
+                if field in merged and merged[field] != value:
+                    for row in copies:
+                        row["issues"].append("identical media has conflicting source " + field)
+                merged[field] = value
+        album_versions: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            for album in candidate["albums"]:
+                title = album["title"]
+                if title in album_versions and album_versions[title] != album:
+                    for row in copies:
+                        row["issues"].append("conflicting source album metadata: " + title)
+                album_versions[title] = album
+        merged["albums"] = list(album_versions.values())
+        for row in copies:
+            row["metadata_differences"] = []
+            row["metadata_verified"] = False
+            if row["path"] in expectations and not row["issues"] and row["status"] != "excluded":
+                for match in row["local_matches"]:
+                    native = local_metadata.get(Path(match["folder"]) / match["path"])
+                    if native is not None:
+                        for issue in differences(merged, native):
+                            row["metadata_differences"].append(
+                                {
+                                    "folder": match["folder"],
+                                    "path": match["path"],
+                                    "issue": issue,
+                                }
+                            )
+                row["metadata_verified"] = (
+                    bool(row["local_matches"]) and not row["metadata_differences"]
+                )
+                row["issues"].extend(sorted({d["issue"] for d in row["metadata_differences"]}))
+            if row["issues"]:
+                row["status"] = "needs_review"
     summaries = {}
     for scope in ("selected", "export_exception"):
         scoped = [row for row in rows if row["scope"] == scope]
@@ -235,7 +313,21 @@ def reconcile_report(
         "files": rows,
         "metadata_without_media": missing_items,
         "warnings": dict(sorted(warnings.items())),
-        "metadata_and_albums_validated": False,
+        "unclassified_source_files": unclassified,
+        "metadata_and_albums_validated": bool(rows)
+        and all(row["metadata_verified"] or row["status"] == "excluded" for row in rows)
+        and not missing_items
+        and not unclassified
+        and not warnings,
+        "metadata_scope": [
+            "dateTaken",
+            "description",
+            "latitude",
+            "longitude",
+            "favorited",
+            "archived",
+            "albums",
+        ],
     }
 
 
@@ -256,7 +348,7 @@ def reconcile(
     print("Capture dates (UTC, inclusive): " + " to ".join(report["date_range"]))
     print("\n| Selected media | Files |\n|---|---:|")
     for key, label in (
-        ("present", "Bytes present; JSON fields unverified"),
+        ("present", "Bytes and supported metadata verified"),
         ("missing", "Missing media with consistent source metadata"),
         ("needs_review", "Metadata or sidecars need review"),
         ("excluded", "Excluded by partner/trashed filters"),
@@ -294,11 +386,14 @@ def reconcile(
     if details:
         for row in report["metadata_without_media"]:
             print(json.dumps(row, ensure_ascii=True))
+    if details:
+        for row in report["unclassified_source_files"]:
+            print("Unclassified source file: " + json.dumps(row, ensure_ascii=True))
     if report["warnings"]:
         print("Inspection warnings: " + json.dumps(report["warnings"], ensure_ascii=True))
     print(
-        "\nScope: local SHA-256 byte coverage and metadata associations only. "
+        "\nScope: local SHA-256 byte coverage and supported source metadata checks. "
         "Album-folder copies count separately; repeated ZIP entries count once. "
-        "JSON availability does not validate dates, GPS or album memberships. "
+        "Supported source fields and exact album associations are compared with generated JSON. Other metadata is outside this check. "
         "This does not check Immich uploads or backups. No files written or server requests."
     )

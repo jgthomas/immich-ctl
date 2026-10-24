@@ -49,7 +49,8 @@ Handle the extracted files in three stages before uploading:
 
 Omit the recovery folder if none was created. Add `--details` when investigating
 audit/reconciliation findings; repeat `--extracted` to include a reviewed folder.
-Reconcile again after manual recovery. Matching bytes do not confirm metadata or albums.
+Reconcile again after manual recovery. Resolve missing files and metadata/album
+differences before uploading; unclassified files and unresolved associations need review.
 
 For each prepared folder, preview, inspect the logs, upload, then validate:
 
@@ -118,6 +119,10 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
   Source ZIPs are never modified.
 - Extraction creates year/month folders and `.JSON` metadata compatible with
   `immich-go upload from-folder`.
+- Extraction and direct ZIP uploads reject matching basenames/sizes with different
+  contents before starting, checking the whole export across all dates. Identical
+  album copies are allowed. Check the reported paths and process unsafe groups
+  separately with their metadata.
 - Queries count metadata IDs across all states, excluding unknown/conflicting
   dates. A separate file table counts directly matched media, candidate edited
   variants and their total. Edits without their own metadata inherit dates only
@@ -128,6 +133,8 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
   `--include-partner` to include partner-shared media.
 - Uploads sync albums, disable overwrite and leave server jobs running.
 - Logs go to `./logs/`; use `--log-file FILE` for a new custom path.
+  Recorded errors cause a failing exit status even if immich-go returns success;
+  partial output is retained for investigation.
 - Upload dry-run console reports say `Would upload` and label metadata processing
   as simulated. The report appears after the preview finishes; raw logs retain
   immich-go's original wording.
@@ -167,9 +174,10 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   unambiguous metadata and a capture date in the selected range. Conflicting
   metadata stays unresolved. Trashed and partner items are excluded; use
   `--include-partner` to include partner items.
-- Uses immich-go to generate `.JSON` sidecars, then verifies recovered bytes,
-  capture dates and album titles before publishing. Recovery filenames include a
-  checksum prefix to avoid collisions with originals.
+- Preserves source album metadata, including narrative/location enrichments.
+  Uses immich-go to generate `.JSON` sidecars, then verifies recovered bytes and
+  supported metadata before publishing. Conflicting albums remain unresolved.
+  Recovery filenames include a checksum prefix to avoid collisions with originals.
 - Matching bytes confirm local file coverage only, not metadata or album coverage.
   Other missing files and unclear associations still require review.
 - Dry runs write nothing and need no immich-go. Recovery contacts no server and
@@ -190,6 +198,10 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   Rejected own sidecars block inherited edit dates and remain named exceptions.
   Unknown dates, ambiguous associations and unpaired files appear separately as
   **export-wide exceptions**, without assigning dates from folder names.
+- Compares source capture dates, descriptions, GPS, favourite/archive flags and
+  exact album associations with generated sidecars, including album descriptions
+  and locations. Handles omitted zero values, GPS fallbacks and identical album copies.
+  Unclassified source files are listed separately; other metadata fields are unverified.
 - Album-folder copies count as separate source files; distinct checksum counts are
   also shown. Metadata records without matching media filenames are listed separately.
 - Add `--details` to list all files and export-wide exceptions, or `--json` for the full report.
@@ -198,8 +210,8 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
 - Reads source media and local files without writing files, invoking immich-go or
   contacting Immich. Checksums read selected media and export-wide exceptions,
   so large exports can take time. Exit `0` means the report was generated, even with findings;
-  operational errors return `1`. Bytes and JSON availability do not establish
-  metadata or album fidelity. Use the validator below to check Immich after upload.
+  operational errors return `1`. These are local extraction checks; use the validator
+  below to check Immich after upload.
 
 ## Upload an extracted folder
 
@@ -279,7 +291,8 @@ uv run --locked ruff format .           # Apply formatting
 Checks include:
 
 - Unit tests and Hypothesis property tests on synthetic archives.
-- Extraction integration test when `immich-go` is installed.
+- Extraction/recovery integration tests when `immich-go` is installed; mandatory
+  against pinned 0.32.0 in a separate CI job.
 - Ruff lint and formatting checks.
 - Mypy type checking for the scripts and shared modules.
 - Installed-command `--help` smoke checks.
@@ -298,3 +311,5 @@ uv run --locked --no-sync mutmut browse
 GitHub Actions runs the standard checks on Python 3.11–3.14 using synthetic data
 and no Immich credentials. Mutation testing runs separately as a non-blocking
 report, with full logs and details in the `mutation-report` artifact for 14 days.
+CI integrations use the real immich-go binary and synthetic archives; live Immich
+uploads and server metadata jobs still require a trial against a server.

@@ -19,6 +19,7 @@ from immich_ctl.takeout import counts, inspect_archives, print_table, selected_m
 from immich_ctl.takeout_audit import audit
 from immich_ctl.takeout_reconcile import reconcile
 from immich_ctl.takeout_recover import RecoveryError, recover
+from immich_ctl.takeout_safety import check_collisions, log_has_errors
 from immich_ctl.upload_output import run_upload
 
 
@@ -134,6 +135,8 @@ def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
         if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
             raise TakeoutError("Extraction requires a new or empty --output directory.")
 
+    check_collisions(paths)
+
     log = log_path(args.action, args.log_file)
     if log in paths or (args.action == "upload" and log == args.config.expanduser().resolve()):
         raise TakeoutError("The log path must be separate from archives and account config.")
@@ -190,6 +193,12 @@ def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
             if args.action == "upload"
             else subprocess.run(command, env=env, check=False)
         )
+    if result.returncode == 0 and log_has_errors(log):
+        print(
+            f"immich-go recorded errors; output may be incomplete. Inspect {json.dumps(str(log))}.",
+            file=sys.stderr,
+        )
+        return 1
     if result.returncode:
         print(f"immich-go failed; inspect {json.dumps(str(log))}.", file=sys.stderr)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
@@ -202,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         ("query", "Read-only metadata counts, albums and optional item list"),
         ("audit", "Read-only audit of numbered media and edited variants across the export"),
         ("recover", "Recover missing numbered edits into a separate upload-ready folder"),
-        ("reconcile", "Read-only checksum coverage and exceptions across extracted folders"),
+        ("reconcile", "Read-only source byte/metadata checks across extracted folders"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
         ("upload", "Upload directly from the ZIPs using immich-go"),
     ):
@@ -305,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                 include_partner=args.include_partner,
             )
         if args.action == "query" or (args.action == "extract" and args.dry_run):
+            if args.action == "extract":
+                check_collisions(paths)
             query(paths, args.date_range, getattr(args, "list_items", False))
             if args.action == "extract":
                 print(
