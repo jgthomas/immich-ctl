@@ -104,6 +104,214 @@ class TakeoutCommandTests(unittest.TestCase):
             self.assertIn("1 conflicting dates", output)
             self.assertIn("Trip", output)
 
+    def test_query_counts_metadata_items_without_claiming_to_count_edited_variants(self):
+        self.write_export(
+            self.archive,
+            {
+                "Takeout/Google Photos/Photos from 2023/first-edited.jpg": b"edited version",
+            },
+        )
+        code, output, _ = self.invoke("query", "--date-range", "2023", str(self.archive))
+        self.assertEqual(code, 0)
+        self.assertIn("Selected metadata items: 2 of 4", output)
+        self.assertIn("Edited media variants can share metadata", output)
+        self.assertIn("| Directly matched media | 2 |", output)
+        self.assertIn("| Candidate edited variants | 1 |", output)
+        self.assertIn("| Total candidate media | 3 |", output)
+
+    def test_query_counts_numbered_edits_and_excludes_unselected_or_unrelated_files(self):
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        metadata = {
+            "title": "first.jpg",
+            "url": "numbered",
+            "photoTakenTime": {"timestamp": "1672531200"},
+        }
+        self.write_export(
+            self.archive,
+            {
+                prefix + "first(1).jpg": b"numbered original",
+                prefix + "first.jpg.supplemental-metadata(1).json": metadata,
+                prefix + "first-edited.jpg": b"edit",
+                prefix + "first-edited(1).jpg": b"numbered edit",
+                prefix + "first(1)-edited.jpg": b"alternative numbered edit",
+                prefix + "first-edited(2).jpg": b"no matching numbered original",
+                prefix + "first-edited.png": b"different extension",
+                prefix + "FIRST-edited.jpg": b"different case",
+                prefix + "first-edited.txt": b"unsupported file",
+                prefix + "next-edited.jpg": b"outside selection",
+                prefix + "unknown-edited.jpg": b"unknown date",
+                "Takeout/Google Photos/Other/first-edited.jpg": b"different folder",
+            },
+        )
+        before = self.archive.read_bytes()
+        code, output, _ = self.invoke("query", "--date-range", "2023", str(self.archive))
+        self.assertEqual(code, 0)
+        self.assertIn("| Directly matched media | 3 |", output)
+        self.assertIn("| Candidate edited variants | 3 |", output)
+        self.assertIn("| Total candidate media | 6 |", output)
+        self.assertEqual(self.archive.read_bytes(), before)
+
+    def test_edits_with_own_metadata_use_their_own_dates_and_count_as_direct_files(self):
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        self.write_export(
+            self.archive,
+            {
+                prefix + "first-edited.jpg": b"edit with its own 2024 date",
+                prefix + "first-edited.jpg.json": {
+                    "title": "first-edited.jpg",
+                    "url": "outside-edit",
+                    "photoTakenTime": {"timestamp": "1704067200"},
+                },
+                prefix + "last-edited.jpg": b"edit with selected date",
+                prefix + "last-edited.jpg.json": {
+                    "title": "last-edited.jpg",
+                    "url": "selected-edit",
+                    "photoTakenTime": {"timestamp": "1672531200"},
+                },
+            },
+        )
+        code, output, _ = self.invoke("query", "--date-range", "2023", str(self.archive))
+        self.assertEqual(code, 0)
+        self.assertIn("| Directly matched media | 3 |", output)
+        self.assertIn("| Candidate edited variants | 0 |", output)
+        self.assertIn("| Total candidate media | 3 |", output)
+
+    def test_ambiguous_originals_cannot_lend_dates_to_edits(self):
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        self.write_export(self.archive, {prefix + "first-edited.jpg": b"edit"})
+        second = self.root / "second.zip"
+        with zipfile.ZipFile(second, "w") as archive:
+            archive.writestr(prefix + "first.jpg", b"different original at same path")
+        for paths in ((self.archive, second), (second, self.archive)):
+            code, output, _ = self.invoke("query", "--date-range", "2023", *(str(p) for p in paths))
+            self.assertEqual(code, 0)
+            self.assertIn("| Directly matched media | 1 |", output)
+            self.assertIn("| Candidate edited variants | 0 |", output)
+
+    def test_ambiguous_edited_metadata_cannot_inherit_the_originals_date(self):
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        metadata = {
+            "title": "first-edited.jpg",
+            "photoTakenTime": {"timestamp": "1704067200"},  # Outside the selected year.
+        }
+        self.write_export(
+            self.archive,
+            {
+                prefix + "first-edited.jpg": b"ambiguous edit",
+                prefix + "first-edited.jpg.json": {**metadata, "url": "edit-a"},
+                prefix + "first-edited.jpg.supplemental-metadata.json": {
+                    **metadata,
+                    "url": "edit-b",
+                },
+            },
+        )
+        code, output, _ = self.invoke("query", "--date-range", "2023", str(self.archive))
+        self.assertEqual(code, 0)
+        self.assertIn("| Directly matched media | 2 |", output)
+        self.assertIn("| Candidate edited variants | 0 |", output)
+        self.assertIn("| Total candidate media | 2 |", output)
+
+    def test_directly_matched_non_media_files_do_not_inflate_media_counts(self):
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        self.write_export(
+            self.archive,
+            {
+                prefix + "notes.bin": b"unsupported file",
+                prefix + "notes.bin.json": {
+                    "title": "notes.bin",
+                    "url": "notes",
+                    "photoTakenTime": {"timestamp": "1672531200"},
+                },
+            },
+        )
+        code, output, _ = self.invoke("query", "--date-range", "2023", str(self.archive))
+        self.assertEqual(code, 0)
+        self.assertIn("Selected metadata items: 3 of 5", output)
+        self.assertIn("| Directly matched media | 2 |", output)
+        self.assertIn("| Total candidate media | 2 |", output)
+
+    def test_candidate_scan_continues_after_unrelated_and_unsupported_files(self):
+        class UnrelatedFirst(set):
+            # A set's iteration order is unspecified. Exercise the troublesome
+            # order explicitly so a premature break cannot pass by chance.
+            def __iter__(self):
+                return iter(sorted(super().__iter__()))
+
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        for unrelated in ("000-unrelated.jpg", "000-unsupported.bin"):
+            with self.subTest(unrelated=unrelated):
+                self.write_export(
+                    self.archive,
+                    {
+                        prefix + unrelated: b"unrelated contents",
+                        prefix + "first-edited.jpg": b"edited contents",
+                    },
+                )
+                *_, coverage = takeout.inspect_archives([self.archive])
+                coverage.unmatched_files = UnrelatedFirst(coverage.unmatched_files)
+                direct, edited = takeout.selected_media_files(
+                    coverage, {("url", "first.jpg"), ("url", "last.jpg")}
+                )
+                self.assertEqual(len(direct), 2)
+                self.assertEqual({key[0] for key in edited}, {"Photos from 2023/first-edited.jpg"})
+
+    def test_split_zip_candidates_are_counted_once_with_repeated_parts(self):
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        second = self.root / "second.zip"
+        with zipfile.ZipFile(second, "w") as archive:
+            archive.writestr(prefix + "first-edited.jpg", b"edited bytes")
+        for paths in (
+            (self.archive, second),
+            (second, self.archive),
+            (self.archive, second, second),
+        ):
+            code, output, _ = self.invoke("query", "--date-range", "2023", *(str(p) for p in paths))
+            self.assertEqual(code, 0)
+            self.assertIn("| Directly matched media | 2 |", output)
+            self.assertIn("| Candidate edited variants | 1 |", output)
+            self.assertIn("| Total candidate media | 3 |", output)
+
+    @unittest.skipUnless(shutil.which("immich-go"), "optional installed immich-go integration")
+    def test_one_metadata_item_can_extract_original_and_edited_media(self):
+        source = self.root / "variants.zip"
+        prefix = "Takeout/Google Photos/Photos from 2023/"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr(prefix + "photo.jpg", b"original bytes")
+            archive.writestr(prefix + "photo-edited.jpg", b"edited bytes")
+            archive.writestr(
+                prefix + "photo.jpg.json",
+                json.dumps(
+                    {
+                        "title": "photo.jpg",
+                        "url": "one-id",
+                        "photoTakenTime": {"timestamp": "1672531200"},
+                    }
+                ),
+            )
+        before = source.read_bytes()
+        code, output, _ = self.invoke("query", "--date-range", "2023", str(source))
+        self.assertEqual(code, 0)
+        self.assertIn("Selected metadata items: 1 of 1", output)
+        destination = self.root / "variants"
+        with patch.dict(os.environ, {"IMMICHGO_TEMPDIR": str(self.root / "cache")}):
+            code, _, error = self.invoke(
+                "extract",
+                "--date-range",
+                "2023",
+                "--output",
+                str(destination),
+                "--log-file",
+                str(self.root / "variants.log"),
+                str(source),
+            )
+        self.assertEqual(code, 0, error)
+        self.assertEqual(
+            {path.read_bytes() for path in destination.rglob("*.jpg")},
+            {b"original bytes", b"edited bytes"},
+        )
+        self.assertEqual(len(list(destination.rglob("*.JSON"))), 2)
+        self.assertEqual(source.read_bytes(), before)
+
     def test_extraction_dry_run_never_invokes_broken_upstream_dry_run(self):
         destination = self.root / "new-output"
         log = self.root / "dry-run.log"
@@ -285,16 +493,17 @@ class TakeoutCommandTests(unittest.TestCase):
     def test_actual_extraction_uses_full_final_day_and_preserves_zip(self):
         output = self.root / "output"
         before = self.archive.read_bytes()
-        code, _, error = self.invoke(
-            "extract",
-            "--date-range",
-            "2023",
-            "--output",
-            str(output),
-            "--log-file",
-            str(self.root / "extract.log"),
-            str(self.archive),
-        )
+        with patch.dict(os.environ, {"IMMICHGO_TEMPDIR": str(self.root / "cache")}):
+            code, _, error = self.invoke(
+                "extract",
+                "--date-range",
+                "2023",
+                "--output",
+                str(output),
+                "--log-file",
+                str(self.root / "extract.log"),
+                str(self.archive),
+            )
         self.assertEqual(code, 0, error)
         self.assertTrue((output / "2023/2023-01/first.jpg").is_file())
         self.assertTrue((output / "2023/2023-12/last.jpg").is_file())

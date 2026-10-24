@@ -66,12 +66,18 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
 - Extraction creates year/month folders and `.JSON` metadata compatible with
   `immich-go upload from-folder`.
 - Queries count metadata IDs across all states, excluding unknown/conflicting
-  dates. Counts do not predict immich-go matching, filtering or deduplication.
+  dates. A separate file table counts directly matched media, candidate edited
+  variants and their total. Edits without their own metadata inherit dates only
+  from an unambiguous original in the same folder, with matching extension and
+  duplicate index. These counts do not predict immich-go's extraction or upload.
 - Extraction dry runs only report the plan; upload dry runs contact the server.
 - Archived items are included; trashed/unmatched items are excluded. Add
   `--include-partner` to include partner-shared media.
 - Uploads sync albums, disable overwrite and leave server jobs running.
 - Logs go to `./logs/`; use `--log-file FILE` for a new custom path.
+- Upload dry-run console reports say `Would upload` and label metadata processing
+  as simulated. The report appears after the preview finishes; raw logs retain
+  immich-go's original wording.
 - Credentials use a private temporary config. Ambient immich-go config and
   `IMMICH_GO_*` settings are ignored.
 
@@ -89,6 +95,7 @@ sidecar album associations, without creating albums from year/month folders.
 It disables overwrite, leaves server jobs running, and uses the same private
 credential handling as Takeout uploads. Dry runs contact the server; both modes
 write logs to `./logs/` or a new `--log-file FILE` outside the source folder.
+Dry-run console reports use the same simulated-action labels as Takeout uploads.
 Source files are not modified. Metadata fidelity depends on immich-go and Immich;
 keep the original Takeout ZIPs.
 

@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -12,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from immich_ctl.config import ConfigError, load_config
+from immich_ctl.upload_output import run_upload
 
 
 class FolderUploadError(Exception):
@@ -76,7 +76,7 @@ def upload_folder(
             "--",
             str(folder),
         ]
-        result = subprocess.run(command, env=env, check=False)
+        result = run_upload(command, env, dry_run=dry_run)
     if result.returncode:
         print(f"immich-go failed; inspect {json.dumps(str(log_file))}.", file=sys.stderr)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode

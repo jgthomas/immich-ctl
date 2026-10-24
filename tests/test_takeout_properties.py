@@ -9,7 +9,7 @@ from pathlib import Path
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from immich_ctl.takeout import inspect_archives
+from immich_ctl.takeout import inspect_archives, selected_media_files
 
 # Bound filesystem work and keep examples consistent across mutation runs.
 ARCHIVE_SETTINGS = settings(max_examples=25, deadline=None, derandomize=True)
@@ -87,3 +87,49 @@ class TakeoutPropertyTests(unittest.TestCase):
             assert set(coverage.capture_times) == set(items)
             for members in memberships.values():
                 assert members <= set(items)
+            direct, edited = selected_media_files(coverage, set(items))
+            assert direct <= coverage.matched_files
+            assert edited <= coverage.unmatched_files
+            assert not direct & edited
+            assert not edited & coverage.file_owners.keys()
+            assert selected_media_files(coverage, set()) == (set(), set())
+
+    @staticmethod
+    @ARCHIVE_SETTINGS
+    @given(
+        st.sampled_from(["photo", "a long name", "photo-edited", "été🌅"]),
+        st.integers(min_value=0, max_value=3),
+        st.booleans(),
+        st.sampled_from([".jpg", ".JPG", ".png", ".mov"]),
+    )
+    def test_numbered_edited_candidates_keep_original_identity_across_zip_parts(
+        stem, index, suffix_index, extension
+    ):
+        number = f"({index})" if index else ""
+        original = stem + number + extension
+        edit = (
+            stem + "-edited" + number if suffix_index else stem + number + "-edited"
+        ) + extension
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first, second = root / "first.zip", root / "second.zip"
+            prefix = "Takeout/Google Photos/Photos from 2023/"
+            with zipfile.ZipFile(first, "w") as archive:
+                archive.writestr(prefix + original, b"original")
+                archive.writestr(
+                    prefix + original + ".json",
+                    json.dumps(
+                        {
+                            "title": original,
+                            "url": "one-id",
+                            "photoTakenTime": {"timestamp": "1672531200"},
+                        }
+                    ),
+                )
+            with zipfile.ZipFile(second, "w") as archive:
+                archive.writestr(prefix + edit, b"edit")
+            for paths in ([first, second], [second, first], [first, second, second]):
+                *_, coverage = inspect_archives(paths)
+                direct, edited = selected_media_files(coverage, {("url", "one-id")})
+                assert {key[0] for key in direct} == {"Photos from 2023/" + original}
+                assert {key[0] for key in edited} == {"Photos from 2023/" + edit}

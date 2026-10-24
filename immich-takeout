@@ -15,7 +15,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from immich_ctl.config import ConfigError, load_config
-from immich_ctl.takeout import counts, inspect_archives, print_table
+from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
+from immich_ctl.upload_output import run_upload
 
 
 class TakeoutError(Exception):
@@ -67,10 +68,18 @@ def query(paths: list[Path], selection: tuple[date, date], list_items: bool = Fa
     print(f"Capture dates (UTC, inclusive): {start.isoformat()} to {end.isoformat()}")
     print(f"Selected metadata items: {len(selected):,} of {len(items):,}")
     print("Metadata counts use Google Photos IDs; file availability is reported separately.")
+    print("Edited media variants can share metadata; the file counts below include candidates.")
     print_table("Selection", [("TOTAL", counts(selected, items))])
     print(f"With a confirmed media filename match: {len(selected & coverage.matched_items):,}")
     print(f"With only ambiguous matches: {len(selected & coverage.ambiguous_items):,}")
     print(f"Without a media filename match: {len(selected & coverage.missing_items):,}")
+    direct, edited = selected_media_files(coverage, selected)
+    print("\n| Category | Files |\n|---|---:|")
+    print(f"| Directly matched media | {len(direct):,} |")
+    print(f"| Candidate edited variants | {len(edited):,} |")
+    print(f"| Total candidate media | {len(direct | edited):,} |")
+    print("Candidate edits inherit dates from an exact, unambiguous original filename match.")
+    print("These are file candidates, not a prediction of what immich-go will extract or upload.")
     missing_dates = sum(not times for times in coverage.capture_times.values())
     conflicts = sum(len(times) > 1 for times in coverage.capture_times.values())
     print(
@@ -169,7 +178,11 @@ def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
             command += ["--write-to-folder", str(destination)]
         command += ["--", *(str(path) for path in paths)]
         # Never print the credentials or put the API key in the process arguments.
-        result = subprocess.run(command, env=env, check=False)
+        result = (
+            run_upload(command, env, dry_run=args.dry_run)
+            if args.action == "upload"
+            else subprocess.run(command, env=env, check=False)
+        )
     if result.returncode:
         print(f"immich-go failed; inspect {json.dumps(str(log))}.", file=sys.stderr)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode

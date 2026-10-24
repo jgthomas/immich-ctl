@@ -24,6 +24,7 @@ class Coverage:
     missing_items: set[ItemIdentity] = field(default_factory=set)
     matched_files: set[FileKey] = field(default_factory=set)
     unmatched_files: set[FileKey] = field(default_factory=set)
+    file_owners: dict[FileKey, set[ItemIdentity]] = field(default_factory=dict)
     sidecars_without_local_match: int = 0
     ambiguous_sidecars: int = 0
     item_paths: dict[ItemIdentity, set[str]] = field(default_factory=dict)
@@ -239,7 +240,41 @@ def inspect_archives(paths: list[Path]) -> Inspection:
     coverage.ambiguous_items -= coverage.matched_items
     coverage.missing_items = set(items) - coverage.matched_items - coverage.ambiguous_items
     coverage.unmatched_files = files - coverage.matched_files
+    coverage.file_owners = dict(owners)
     return items, memberships, album_titles, raw_files, warnings, sidecars, coverage
+
+
+def selected_media_files(
+    coverage: Coverage, selected: set[ItemIdentity]
+) -> tuple[set[FileKey], set[FileKey]]:
+    """Count direct files and unclaimed edits of unambiguously selected originals.
+
+    Recognise photo-edited.jpg, photo-edited(1).jpg and photo(1)-edited.jpg.
+    Filename case, extension, directory and duplicate index must match exactly.
+    A variant with its own metadata claim is never assigned an inherited date.
+    """
+    direct = {
+        key
+        for key in coverage.matched_files
+        if coverage.file_owners[key] <= selected and media_type(key[0]) != "Other"
+    }
+    filenames: defaultdict[str, set[FileKey]] = defaultdict(set)
+    for key in coverage.matched_files | coverage.unmatched_files:
+        filenames[key[0]].add(key)
+    edited: set[FileKey] = set()
+    for key in coverage.unmatched_files:
+        if key in coverage.file_owners or media_type(key[0]) == "Other":
+            continue
+        path = PurePosixPath(key[0])
+        match = re.fullmatch(r"(.+)-edited(\(\d+\))?", path.stem)
+        if match is None:
+            continue
+        base, number = match.groups()
+        original = str(path.with_name(base + (number or "") + path.suffix))
+        originals = filenames.get(original, set())
+        if len(originals) == 1 and originals <= direct:
+            edited.add(key)
+    return direct, edited
 
 
 def counts(identities: Iterable[ItemIdentity], items: Items) -> Counter[str]:

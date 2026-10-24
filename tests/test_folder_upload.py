@@ -15,7 +15,7 @@ from unittest.mock import patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from immich_ctl import folder_upload
+from immich_ctl import folder_upload, upload_output
 from tests.script_loader import load_script
 
 upload_script = load_script("immich-upload-folder")
@@ -111,7 +111,7 @@ class FolderUploadTests(unittest.TestCase):
 
                 with (
                     patch.object(folder_upload.shutil, "which", return_value="/usr/bin/immich-go"),
-                    patch.object(folder_upload.subprocess, "run", side_effect=run),
+                    patch.object(upload_output.subprocess, "run", side_effect=run),
                     patch.dict(
                         os.environ,
                         {"IMMICH_GO_UPLOAD_OVERWRITE": "true", "FOLDER_UPLOAD_TEST": "retained"},
@@ -140,7 +140,7 @@ class FolderUploadTests(unittest.TestCase):
         with (
             patch.object(folder_upload.shutil, "which", return_value="immich-go") as which,
             patch.object(
-                folder_upload.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+                upload_output.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
             ) as run,
             redirect_stdout(io.StringIO()),
         ):
@@ -153,14 +153,14 @@ class FolderUploadTests(unittest.TestCase):
         empty = self.root / "empty"
         empty.mkdir()
         for source in (self.root / "missing", self.media, empty):
-            with self.subTest(source=source), patch.object(folder_upload.subprocess, "run") as run:
+            with self.subTest(source=source), patch.object(upload_output.subprocess, "run") as run:
                 code, _, error = invoke(source, "--config", self.config, "--log-file", self.log)
                 self.assertEqual(code, 1)
                 self.assertIn("non-empty folder", error)
                 self.assertFalse(self.log.exists())
                 run.assert_not_called()
         self.config.write_text("api_key=synthetic-secret-%-key")
-        with patch.object(folder_upload.subprocess, "run") as run:
+        with patch.object(upload_output.subprocess, "run") as run:
             code, _, error = invoke(*self.arguments())
             self.assertEqual(code, 1)
             self.assertIn("Invalid config", error)
@@ -178,7 +178,7 @@ class FolderUploadTests(unittest.TestCase):
             with (
                 self.subTest(log=log),
                 patch.object(folder_upload.shutil, "which", return_value="immich-go"),
-                patch.object(folder_upload.subprocess, "run") as run,
+                patch.object(upload_output.subprocess, "run") as run,
             ):
                 code, _, error = invoke(self.folder, "--config", self.config, "--log-file", log)
                 self.assertEqual(code, 1)
@@ -197,7 +197,7 @@ class FolderUploadTests(unittest.TestCase):
             with (
                 patch.object(folder_upload.shutil, "which", return_value="immich-go"),
                 patch.object(
-                    folder_upload.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+                    upload_output.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
                 ),
             ):
                 for _ in range(2):
@@ -231,7 +231,7 @@ class FolderUploadTests(unittest.TestCase):
             with (
                 self.subTest(outcome=outcome),
                 patch.object(folder_upload.shutil, "which", return_value="immich-go"),
-                patch.object(folder_upload.subprocess, "run", side_effect=run),
+                patch.object(upload_output.subprocess, "run", side_effect=run),
             ):
                 code, _, error = invoke(*self.arguments())
                 self.assertEqual(code, expected)
@@ -280,7 +280,7 @@ class FolderUploadPropertyTests(unittest.TestCase):
 
             with (
                 patch.object(folder_upload.shutil, "which", return_value="immich-go"),
-                patch.object(folder_upload.subprocess, "run", side_effect=run),
+                patch.object(upload_output.subprocess, "run", side_effect=run),
                 redirect_stdout(io.StringIO()),
             ):
                 assert (
@@ -319,7 +319,7 @@ class FolderMetadataIntegrationTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result
 
-            with patch.object(folder_upload.subprocess, "run", side_effect=help_only):
+            with patch.object(upload_output.subprocess, "run", side_effect=help_only):
                 self.assertEqual(
                     invoke(source, "--config", config, "--dry-run", "--log-file", root / "run.log")[
                         0
