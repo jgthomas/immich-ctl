@@ -81,6 +81,24 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
 - Credentials use a private temporary config. Ambient immich-go config and
   `IMMICH_GO_*` settings are ignored.
 
+## Audit numbered Takeout files
+
+```bash
+./immich-takeout audit ~/Downloads/takeout-EXPORT-*.zip
+```
+
+Pass all ZIP parts from one export. The read-only report counts numbered media
+and `-edited` variants by capture year, separating direct sidecar matches,
+candidate original sidecars, ambiguous associations and missing metadata.
+Add `--details` for filenames and proposed sidecars, or `--json` for the full report.
+Files with unresolved, missing or conflicting dates appear under `Unknown`.
+
+Potentially affected edits are filename-based candidates for the numbered-edit
+matching issue, not confirmed extraction failures. Literal parentheses are
+preserved; numbering does not prove duplication. Other edit suffixes are not
+recognised. Album-folder copies count separately; repeated ZIP entries count once.
+The audit reads filenames and JSON only, without extraction or server access.
+
 ## Upload an extracted folder
 
 Keep the extracted media and `.JSON` sidecars together. Preview the upload:

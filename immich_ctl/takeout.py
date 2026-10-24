@@ -25,6 +25,7 @@ class Coverage:
     matched_files: set[FileKey] = field(default_factory=set)
     unmatched_files: set[FileKey] = field(default_factory=set)
     file_owners: dict[FileKey, set[ItemIdentity]] = field(default_factory=dict)
+    file_sidecars: dict[FileKey, set[str]] = field(default_factory=dict)
     sidecars_without_local_match: int = 0
     ambiguous_sidecars: int = 0
     item_paths: dict[ItemIdentity, set[str]] = field(default_factory=dict)
@@ -205,6 +206,7 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                 # Ambiguous candidates still compete with another ID's exact match.
                 for candidate in candidates:
                     owners[candidate].add(identity)
+                    coverage.file_sidecars.setdefault(candidate, set()).add(str(relative))
                 candidate_types = {media_type(key[0]) for key in candidates} - {"Other"}
                 kind = media_type(title)
                 if len(candidate_types) == 1:
@@ -244,6 +246,15 @@ def inspect_archives(paths: list[Path]) -> Inspection:
     return items, memberships, album_titles, raw_files, warnings, sidecars, coverage
 
 
+def edited_original_path(path: PurePosixPath) -> PurePosixPath | None:
+    """Derive an edited file's original name without removing literal parentheses."""
+    match = re.fullmatch(r"(.+)-edited(\(\d+\))?", path.stem)
+    if match is None:
+        return None
+    base, number = match.groups()
+    return path.with_name(base + (number or "") + path.suffix)
+
+
 def selected_media_files(
     coverage: Coverage, selected: set[ItemIdentity]
 ) -> tuple[set[FileKey], set[FileKey]]:
@@ -266,12 +277,10 @@ def selected_media_files(
         if key in coverage.file_owners or media_type(key[0]) == "Other":
             continue
         path = PurePosixPath(key[0])
-        match = re.fullmatch(r"(.+)-edited(\(\d+\))?", path.stem)
-        if match is None:
+        original_path = edited_original_path(path)
+        if original_path is None:
             continue
-        base, number = match.groups()
-        original = str(path.with_name(base + (number or "") + path.suffix))
-        originals = filenames.get(original, set())
+        originals = filenames.get(str(original_path), set())
         if len(originals) == 1 and originals <= direct:
             edited.add(key)
     return direct, edited

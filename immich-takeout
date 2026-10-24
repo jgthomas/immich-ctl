@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query, extract or upload a date selection from one person's Takeout ZIPs."""
+"""Query, audit, extract or upload one person's Google Photos Takeout ZIPs."""
 
 import argparse
 import json
@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from immich_ctl.config import ConfigError, load_config
 from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
+from immich_ctl.takeout_audit import audit
 from immich_ctl.upload_output import run_upload
 
 
@@ -193,11 +194,18 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="action", required=True)
     for name, help_text in (
         ("query", "Read-only metadata counts, albums and optional item list"),
+        ("audit", "Read-only audit of numbered media and edited variants across the export"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
         ("upload", "Upload directly from the ZIPs using immich-go"),
     ):
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("archives", nargs="+", type=Path, metavar="ZIP")
+        if name == "audit":
+            sub.add_argument(
+                "--details", action="store_true", help="List numbered files and candidate sidecars"
+            )
+            sub.add_argument("--json", action="store_true", help="Print the full audit as JSON")
+            continue
         sub.add_argument(
             "--date-range",
             required=True,
@@ -225,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths:
             with zipfile.ZipFile(path):
                 pass
+        if args.action == "audit":
+            audit(paths, details=args.details, json_output=args.json)
+            return 0
         if args.action == "query" or (args.action == "extract" and args.dry_run):
             query(paths, args.date_range, getattr(args, "list_items", False))
             if args.action == "extract":
