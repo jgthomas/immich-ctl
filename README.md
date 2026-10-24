@@ -11,6 +11,59 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
 - For development: [uv](https://docs.astral.sh/uv/).
 
+## Migration runbook
+
+Work on one person's export and a small year first. Run from the repository root,
+using all ZIP parts together and that person's account INI:
+
+```bash
+year=2022
+archives=(~/Downloads/takeout-EXPORT-*.zip)
+normal="$HOME/Pictures/immich-$year"
+recovered="${normal}-recovered"
+config="$HOME/.config/immich-ctl/ACCOUNT.ini"
+
+./immich-takeout query --date-range "$year" "${archives[@]}"
+./immich-takeout audit "${archives[@]}"
+./immich-takeout extract --date-range "$year" --output "$normal" "${archives[@]}"
+```
+
+Handle the extracted files in three stages before uploading:
+
+| Stage | Handling |
+|---|---|
+| 1. Normal pass | Keep the media and generated `.JSON` sidecars together. This includes direct matches and edits immich-go recognises; many `(n)` files already work normally. |
+| 2. Omitted numbered edits | Preview `recover`, then run it to prepare a separate folder. It recovers missing numbered `-edited` variants only when metadata is unambiguous, verifies their bytes and records a manifest. Numbering alone does not mean a file needs recovery. |
+| 3. Remaining exceptions | Use `reconcile` to identify missing files, ambiguous associations and unusable metadata. Review these manually; prepare confirmed files with verified metadata in a separate reviewed folder, or record why they are deferred/excluded. Keep unresolved files out of upload folders. Unknown-date exceptions are export-wide, not necessarily part of this year; do not infer dates from folder names. |
+
+```bash
+./immich-takeout recover --date-range "$year" --extracted "$normal" \
+  --output "$recovered" --dry-run "${archives[@]}"
+# Inspect the preview before creating the recovery folder:
+./immich-takeout recover --date-range "$year" --extracted "$normal" \
+  --output "$recovered" "${archives[@]}"
+
+./immich-takeout reconcile --date-range "$year" \
+  --extracted "$normal" --extracted "$recovered" "${archives[@]}"
+```
+
+Omit the recovery folder if none was created. Add `--details` when investigating
+audit/reconciliation findings; repeat `--extracted` to include a reviewed folder.
+Reconcile again after manual recovery. Matching bytes do not confirm metadata or albums.
+
+For each prepared folder, preview, inspect the logs, upload, then validate:
+
+```bash
+./immich-upload-folder "$normal" --config "$config" --dry-run
+./immich-upload-folder "$normal" --config "$config"
+./immich-validate-folder "$normal" --config "$config" --details
+```
+
+Repeat for recovery/reviewed folders that exist. Investigate skipped/discarded
+uploads and validation findings; a dry run does not upload files. Check dates,
+GPS, albums and playback. Keep the ZIPs and Google Photos until independent
+backup and restore testing are complete.
+
 ## Describe a Takeout export
 
 Report photos and videos by capture year and album, plus metadata-to-file coverage.
