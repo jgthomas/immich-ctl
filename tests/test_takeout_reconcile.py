@@ -47,7 +47,11 @@ class ReconcileTests(unittest.TestCase):
         target = folder / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(contents)
-        Path(str(target) + ".JSON").write_text(json.dumps({"dateTaken": "2023-01-01T00:00:00Z"}))
+        Path(str(target) + ".JSON").write_text(
+            json.dumps(
+                {"software": "immich-go version:0.32.0", "dateTaken": "2023-01-01T00:00:00Z"}
+            )
+        )
         return target
 
     def report(self, *folders):
@@ -97,7 +101,13 @@ class ReconcileTests(unittest.TestCase):
         self.write()
         original = self.local_file(self.extracted, "original.jpg", b"original")
         Path(str(original) + ".JSON").write_text(
-            json.dumps({"dateTaken": "2023-01-01T00:00:00Z", "albums": [{"title": "Trip"}]})
+            json.dumps(
+                {
+                    "software": "immich-go version:0.32.0",
+                    "dateTaken": "2023-01-01T00:00:00Z",
+                    "albums": [{"title": "Trip"}],
+                }
+            )
         )
         report = self.report()
         self.assertEqual(report["selected"]["files"], 3)
@@ -182,7 +192,7 @@ class ReconcileTests(unittest.TestCase):
 
         for size in (JSON_LIMIT, JSON_LIMIT + 1):
             with self.subTest(size=size):
-                base = b'{"dateTaken":"2023-01-01T00:00:00Z","padding":""}'
+                base = b'{"software":"immich-go version:0.32.0","dateTaken":"2023-01-01T00:00:00Z","padding":""}'
                 payload = base[:-2] + b"x" * (size - len(base)) + b'"}'
                 Path(str(media) + ".JSON").write_bytes(payload)
                 with patch.object(Path, "open", autospec=True, side_effect=bounded_open):

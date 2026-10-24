@@ -11,6 +11,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from immich_ctl.config import ConfigError, load_config
+from immich_ctl.folder_compat import sidecar_state
+from immich_ctl.folder_validate import ValidationError, inspect_folder
+from immich_ctl.takeout_safety import log_has_errors
 from immich_ctl.upload_output import run_upload
 
 
@@ -35,6 +38,18 @@ def upload_folder(
     log_file = log_file.expanduser().resolve()
     if log_file.is_relative_to(folder) or log_file == config.expanduser().resolve():
         raise FolderUploadError("The log must be outside the source folder and account config.")
+    try:
+        media, warnings = inspect_folder(folder)
+    except ValidationError as error:
+        raise FolderUploadError(str(error)) from error
+    issues = list(warnings)
+    sidecars: dict[Path, dict[str, list[Path]]] = {}
+    for path, _ in media:
+        state = sidecar_state(path, sidecars)
+        if state != "present_unverified":
+            issues.append(str(path.relative_to(folder)) + ": " + state)
+    if issues:
+        raise FolderUploadError("Upload folder needs review: " + json.dumps(issues))
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("x", encoding="utf-8"):
         log_file.chmod(0o600)
@@ -77,6 +92,12 @@ def upload_folder(
             str(folder),
         ]
         result = run_upload(command, env, dry_run=dry_run)
+    if result.returncode == 0 and log_has_errors(log_file):
+        print(
+            f"immich-go recorded errors; upload may be incomplete. Inspect {json.dumps(str(log_file))}.",
+            file=sys.stderr,
+        )
+        return 1
     if result.returncode:
         print(f"immich-go failed; inspect {json.dumps(str(log_file))}.", file=sys.stderr)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode

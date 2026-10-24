@@ -56,6 +56,10 @@ def log_has_errors(path: Path) -> bool:
             except ValueError:
                 # An unreadable structured log cannot establish a clean run.
                 return True
-            if not isinstance(record, dict) or record.get("level") in {"ERROR", "FATAL"}:
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("level"), str)
+                or record["level"] in {"ERROR", "FATAL"}
+            ):
                 return True
     return False

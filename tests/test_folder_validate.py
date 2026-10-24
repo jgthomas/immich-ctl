@@ -132,6 +132,25 @@ class FolderValidationTests(unittest.TestCase):
             code = script.main([str(self.folder), "--config", str(self.config), *extra])
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def test_album_membership_does_not_certify_nested_metadata(self):
+        self.metadata["albums"][0].update(
+            description="Important narrative", latitude=51.5, longitude=-0.12
+        )
+        self.sidecar.write_text(json.dumps(self.metadata))
+        code, output, error = self.invoke("--json")
+        self.assertEqual(code, 2, error)
+        row = json.loads(output)["files"][0]
+        self.assertEqual(row["status"], "incomplete")
+        self.assertEqual(row["differences"], [])
+        self.assertEqual(
+            row["unchecked"],
+            [
+                "unsupported album metadata: Trip: description",
+                "unsupported album metadata: Trip: latitude",
+                "unsupported album metadata: Trip: longitude",
+            ],
+        )
+
     def test_read_only_end_to_end_metadata_albums_and_unchanged_inputs(self):
         before = {p: p.read_bytes() for p in self.folder.iterdir()}
         code, output, error = self.invoke("--json")

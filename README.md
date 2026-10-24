@@ -50,7 +50,9 @@ Handle the extracted files in three stages before uploading:
 Omit the recovery folder if none was created. Add `--details` when investigating
 audit/reconciliation findings; repeat `--extracted` to include a reviewed folder.
 Reconcile again after manual recovery. Resolve missing files and metadata/album
-differences before uploading; unclassified files and unresolved associations need review.
+differences before uploading. Review cross-year conflicts, possible albums without
+metadata and unexpected local media; move unrelated, outside-date or excluded files
+out of the proposed upload folders.
 
 For each prepared folder, preview, inspect the logs, upload, then validate:
 
@@ -198,6 +200,10 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   Rejected own sidecars block inherited edit dates and remain named exceptions.
   Unknown dates, ambiguous associations and unpaired files appear separately as
   **export-wide exceptions**, without assigning dates from folder names.
+- Checks identical content across date ranges, including other years, before
+  certifying selected files. Possible album folders without metadata stay unresolved.
+  Every local media file is accounted for; unexpected files are classified as
+  outside-date, excluded, unresolved source content or unmatched to the export.
 - Compares source capture dates, descriptions, GPS, favourite/archive flags and
   exact album associations with generated sidecars, including album descriptions
   and locations. Handles omitted zero values, GPS fallbacks and identical album copies.
@@ -208,7 +214,8 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   Trashed/partner items are excluded when their metadata is consistent; add
   `--include-partner` to include partner items.
 - Reads source media and local files without writing files, invoking immich-go or
-  contacting Immich. Checksums read selected media and export-wide exceptions,
+  contacting Immich. Checksums read selected media, export-wide exceptions and
+  relevant files from other dates,
   so large exports can take time. Exit `0` means the report was generated, even with findings;
   operational errors return `1`. These are local extraction checks; use the validator
   below to check Immich after upload.
@@ -228,6 +235,13 @@ It disables overwrite, leaves server jobs running, and uses the same private
 credential handling as Takeout uploads. Dry runs contact the server; both modes
 write logs to `./logs/` or a new `--log-file FILE` outside the source folder.
 Dry-run console reports use the same simulated-action labels as Takeout uploads.
+Both modes reject missing/incompatible native sidecars, unreadable or unsupported
+files and paths containing glob characters (`*`, `?`, brackets or backslashes).
+Parenthesised `(n)` suffixes are allowed. Keep the `software` version marker in
+manually prepared native sidecars and reconcile their fields before uploading.
+Prepare verified copies with safe names when necessary; source files are not renamed.
+Recorded errors or malformed logs produce a failing exit status even if immich-go
+returns success.
 Source files are not modified. Metadata fidelity depends on immich-go and Immich;
 keep the original Takeout ZIPs.
 
@@ -248,6 +262,8 @@ After uploading, check the extracted files against the same user's library:
   Unsupported metadata (including tags), XMP, unreadable sidecars and skipped files
   cannot establish complete validation. Album names are checked; duplicate names
   cannot identify a particular album, and extra memberships are allowed.
+  Album descriptions, locations and other nested album fields are explicitly
+  unchecked and produce an `incomplete` result.
 - Add `--details` to list passing files too, or `--json` for the full report.
   Exit codes: `0` all available checks passed, `2` findings/incomplete checks,
   `1` operational error; interrupted runs return `130`.

@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import re
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -13,6 +12,7 @@ from immich_ctl.takeout import (
     counts,
     inspect_archives,
     media_type,
+    possible_album_directories,
     print_table,
 )
 
@@ -52,14 +52,7 @@ def main(argv: list[str] | None = None) -> None:
     print_table("", [("TOTAL", counts(items, items))])
 
     # Confirmed albums need album metadata; folder-only guesses stay separate.
-    inferred_albums = {
-        directory
-        for directory in set(memberships) | coverage.directories
-        if directory not in titles
-        and directory != "."
-        and directory not in {"Archive", "Trash", "Failed videos"}
-        and not re.fullmatch(r"Photos from \d{4}", directory)
-    }
+    inferred_albums = possible_album_directories(coverage, memberships, titles)
     title_counts = Counter(titles.values())
     rows = []
     for directory, title in titles.items():

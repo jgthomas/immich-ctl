@@ -88,6 +88,9 @@ class FailedSidecarTests(unittest.TestCase):
 
     def test_json_size_boundary_and_oversized_members_are_not_read(self):
         self.export()
+        # A real album needs explicit album metadata; this test concerns JSON size.
+        with zipfile.ZipFile(self.archive, "a") as archive:
+            archive.writestr("Takeout/Google Photos/Year/metadata.json", '{"title":"Year"}')
         own = json.dumps(sidecar("photo-edited.jpg", "own")).encode()
         real_read = zipfile.ZipFile.read
         for size in (JSON_LIMIT, JSON_LIMIT + 1):

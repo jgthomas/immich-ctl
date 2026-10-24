@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from immich_ctl.folder_compat import JSON_LIMIT, sidecar_state
 from immich_ctl.takeout import (
     Coverage,
     FileKey,
@@ -16,15 +17,14 @@ from immich_ctl.takeout import (
     google_photos_path,
     inspect_archives,
     media_type,
+    possible_album_directories,
 )
 from immich_ctl.takeout_metadata import album_payloads, differences, expectation
 from immich_ctl.takeout_recover import digest, folder_checksums
 
-JSON_LIMIT = 8 * 1024 * 1024
-
 
 def source_rows(
-    coverage: Coverage, selection: tuple[date, date]
+    coverage: Coverage, selection: tuple[date, date], *, include_outside: bool = False
 ) -> tuple[list[dict[str, Any]], int]:
     """Assign dates only through an unambiguous own or exact original association."""
     files = coverage.matched_files | coverage.unmatched_files
@@ -68,16 +68,22 @@ def source_rows(
         if len(times) != 1:
             issues.append("conflicting capture dates" if times else "unknown capture date")
         dated = association in {"direct", "candidate_edit"} and len(owners) == 1 and len(times) == 1
-        if dated and not selection[0] <= next(iter(times)).date() <= selection[1]:
+        outside_dates = dated and not selection[0] <= next(iter(times)).date() <= selection[1]
+        if outside_dates:
             outside += 1
-            continue
+            if not include_outside:
+                continue
         rows.append(
             {
                 "path": key[0],
                 "crc32": f"{key[1]:08x}",
                 "size": key[2],
                 "association": association,
-                "scope": "selected" if dated else "export_exception",
+                "scope": "outside_date"
+                if outside_dates
+                else "selected"
+                if dated
+                else "export_exception",
                 "capture_times": sorted(t.isoformat() for t in times),
                 "sidecars": sorted(
                     set().union(*(coverage.item_paths[owner] for owner in owners)) | failed
@@ -87,36 +93,6 @@ def source_rows(
             }
         )
     return rows, outside
-
-
-def sidecar_state(
-    media: Path,
-    cache: dict[Path, dict[str, list[Path]]],
-    values: dict[Path, dict[str, Any]] | None = None,
-) -> str:
-    """Read a bounded native sidecar, retaining its data for source comparison."""
-    if media.parent not in cache:
-        names: defaultdict[str, list[Path]] = defaultdict(list)
-        for path in media.parent.iterdir():
-            if path.suffix.casefold() == ".json":
-                names[path.with_suffix("").name].append(path)
-        cache[media.parent] = dict(names)
-    candidates = cache[media.parent].get(media.name, [])
-    if not candidates:
-        return "missing"
-    if len(candidates) != 1:
-        return "ambiguous"
-    with candidates[0].open("rb") as stream:
-        payload = stream.read(JSON_LIMIT + 1)
-    try:
-        value = json.loads(payload) if len(payload) <= JSON_LIMIT else None
-    except (ValueError, UnicodeError):
-        return "invalid"
-    if isinstance(value, dict):
-        if values is not None:
-            values[media] = value
-        return "present_unverified"
-    return "invalid"
 
 
 def reconcile_report(
@@ -148,7 +124,24 @@ def reconcile_report(
     for owner, item_paths in coverage.item_paths.items():
         for name in item_paths:
             sidecar_owners[name].add(owner)
-    rows, outside = source_rows(coverage, selection)
+    all_rows, outside = source_rows(coverage, selection, include_outside=True)
+    # Identical content has the same size/CRC, but confirm equality with SHA-256.
+    # Outside-date candidates must remain available for conflict detection and
+    # for accounting for every local file the recursive uploader would consider.
+    focus_signatures = {(r["crc32"], r["size"]) for r in all_rows if r["scope"] != "outside_date"}
+    local_sizes = {
+        (Path(match["folder"]) / match["path"]).stat().st_size
+        for matches in local.values()
+        for match in matches
+    }
+    rows = [
+        r
+        for r in all_rows
+        if r["scope"] != "outside_date"
+        or (r["crc32"], r["size"]) in focus_signatures
+        or r["size"] in local_sizes
+    ]
+    possible_albums = possible_album_directories(coverage, memberships, titles)
     unclassified = [
         {"path": key[0], "crc32": f"{key[1]:08x}", "size": key[2]}
         for key in sorted(coverage.matched_files | coverage.unmatched_files)
@@ -215,6 +208,14 @@ def reconcile_report(
             )
             row["content"] = "present" if row["local_matches"] else "missing"
             owners = set().union(*(sidecar_owners[name] for name in row["sidecars"]))
+            uncertain_albums = sorted(
+                d for d in possible_albums if owners & memberships.get(d, set())
+            )
+            row["possible_album_folders"] = uncertain_albums
+            if uncertain_albums:
+                row["issues"].append(
+                    "possible album folders lack metadata: " + json.dumps(uncertain_albums)
+                )
             directories = [
                 directory
                 for directory in set(titles) | coverage.invalid_album_metadata
@@ -232,6 +233,7 @@ def reconcile_report(
             excluded = bool(data.get("trashed")) or (
                 not include_partner and isinstance(origin, dict) and "fromPartnerSharing" in origin
             )
+            row["source_excluded"] = excluded and not row["issues"]
             for state in sorted(
                 {p["sidecar"] for p in row["local_matches"]} - {"present_unverified"}
             ):
@@ -289,6 +291,42 @@ def reconcile_report(
                 row["issues"].extend(sorted({d["issue"] for d in row["metadata_differences"]}))
             if row["issues"]:
                 row["status"] = "needs_review"
+    cross_date_conflicts = [
+        {
+            "sha256": checksum,
+            "files": [
+                {key: row[key] for key in ("path", "scope", "capture_times", "sidecars")}
+                for row in copies
+            ],
+        }
+        for checksum, copies in sorted(groups.items())
+        if any(r["scope"] == "selected" for r in copies)
+        and any(r["scope"] == "outside_date" for r in copies)
+    ]
+    local_media = []
+    for checksum, matches in sorted(local.items()):
+        sources = groups.get(checksum, [])
+        if any(r["scope"] == "selected" and not r["source_excluded"] for r in sources):
+            classification = "selected"
+        elif any(r["source_excluded"] for r in sources):
+            classification = "excluded"
+        elif any(r["scope"] == "outside_date" for r in sources):
+            classification = "outside_date"
+        elif sources:
+            classification = "unresolved_source"
+        else:
+            classification = "not_in_export"
+        for match in sorted(matches, key=lambda m: (m["folder"], m["path"])):
+            local_media.append(
+                {
+                    **match,
+                    "sha256": checksum,
+                    "classification": classification,
+                    "source_paths": sorted({r["path"] for r in sources}),
+                }
+            )
+    unexpected_local = [m for m in local_media if m["classification"] != "selected"]
+    rows = [r for r in rows if r["scope"] != "outside_date"]
     summaries = {}
     for scope in ("selected", "export_exception"):
         scoped = [row for row in rows if row["scope"] == scope]
@@ -314,11 +352,16 @@ def reconcile_report(
         "metadata_without_media": missing_items,
         "warnings": dict(sorted(warnings.items())),
         "unclassified_source_files": unclassified,
+        "possible_album_folders": sorted(possible_albums),
+        "cross_date_conflicts": cross_date_conflicts,
+        "local_media": local_media,
+        "unexpected_local_files": unexpected_local,
         "metadata_and_albums_validated": bool(rows)
         and all(row["metadata_verified"] or row["status"] == "excluded" for row in rows)
         and not missing_items
         and not unclassified
-        and not warnings,
+        and not warnings
+        and not unexpected_local,
         "metadata_scope": [
             "dateTaken",
             "description",
@@ -389,6 +432,13 @@ def reconcile(
     if details:
         for row in report["unclassified_source_files"]:
             print("Unclassified source file: " + json.dumps(row, ensure_ascii=True))
+    if report["cross_date_conflicts"]:
+        print("\nCross-date conflicts affecting selected content")
+        for conflict in report["cross_date_conflicts"]:
+            print(json.dumps(conflict, ensure_ascii=True))
+    print(f"\nUnexpected local media: {len(report['unexpected_local_files']):,}")
+    for local in report["unexpected_local_files"]:
+        print(json.dumps(local, ensure_ascii=True))
     if report["warnings"]:
         print("Inspection warnings: " + json.dumps(report["warnings"], ensure_ascii=True))
     print(

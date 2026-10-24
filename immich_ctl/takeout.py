@@ -284,6 +284,20 @@ def edited_original_path(path: PurePosixPath) -> PurePosixPath | None:
     return path.with_name(base + (number or "") + path.suffix)
 
 
+def possible_album_directories(
+    coverage: Coverage, memberships: dict[str, set[ItemIdentity]], titles: dict[str, str]
+) -> set[str]:
+    """Folder names can suggest an album, but never establish membership."""
+    return {
+        directory
+        for directory in set(memberships) | coverage.directories
+        if directory not in titles
+        and directory != "."
+        and directory not in {"Archive", "Trash", "Failed videos"}
+        and not re.fullmatch(r"Photos from \d{4}", directory)
+    }
+
+
 def selected_media_files(
     coverage: Coverage, selected: set[ItemIdentity]
 ) -> tuple[set[FileKey], set[FileKey]]:

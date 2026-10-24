@@ -42,7 +42,13 @@ class FolderUploadTests(unittest.TestCase):
         self.media = self.folder / "2023/2023-01/photo.jpg"
         self.media.write_bytes(b"original photo")
         self.media.with_name("photo.jpg.JSON").write_text(
-            json.dumps({"fileName": "photo.jpg", "albums": [{"title": "Trip"}]})
+            json.dumps(
+                {
+                    "software": "immich-go version:0.32.0",
+                    "fileName": "photo.jpg",
+                    "albums": [{"title": "Trip"}],
+                }
+            )
         )
         self.config = self.root / "account.ini"
         self.key = "synthetic-secret-%-key"
@@ -258,7 +264,9 @@ class FolderUploadPropertyTests(unittest.TestCase):
             source = root / ("extracted-" + name)
             source.mkdir()
             (source / "photo.jpg").write_bytes(b"photo")
-            (source / "photo.jpg.JSON").write_text('{"albums":[{"title":"Trip"}]}')
+            (source / "photo.jpg.JSON").write_text(
+                '{"software":"immich-go version:0.32.0","albums":[{"title":"Trip"}]}'
+            )
             before = snapshot(source)
             key = "synthetic-secret-" + suffix
             config = root / "account.ini"
@@ -303,6 +311,7 @@ class FolderMetadataIntegrationTests(unittest.TestCase):
             source = root / "extracted"
             source.mkdir()
             (source / "photo.jpg").write_bytes(b"photo")
+            (source / "photo.jpg.JSON").write_text('{"software":"immich-go version:0.32.0"}')
             config = root / "account.ini"
             config.write_text("[immich]\nserver=https://photos.example\napi_key=synthetic-key\n")
 

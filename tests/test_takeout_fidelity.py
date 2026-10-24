@@ -68,6 +68,7 @@ class FidelityTests(unittest.TestCase):
             },
         )
         self.native = {
+            "software": "immich-go version:0.32.0",
             "dateTaken": "2023-01-01T00:00:00Z",
             "description": "Keep this description",
             "latitude": 51.5,
@@ -98,7 +99,7 @@ class FidelityTests(unittest.TestCase):
         self.assertEqual(report["files"][0]["metadata_differences"], [])
 
     def test_removed_or_altered_source_fields_are_reported_even_if_server_would_agree(self):
-        for field in self.native:
+        for field in self.native.keys() - {"software"}:
             for remove in (True, False):
                 with self.subTest(field=field, remove=remove):
                     native = copy.deepcopy(self.native)

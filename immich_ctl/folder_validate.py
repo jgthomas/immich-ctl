@@ -229,6 +229,9 @@ def compare(
                 checked += 1
                 if title not in albums:
                     differences.append("missing album membership: " + title)
+            for album in expected_albums:
+                for field in sorted(album.keys() - {"title"}):
+                    unchecked.append("unsupported album metadata: " + album["title"] + ": " + field)
     for field in sorted(
         metadata.keys()
         - {
