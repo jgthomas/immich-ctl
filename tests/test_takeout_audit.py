@@ -253,13 +253,31 @@ class TakeoutAuditTests(unittest.TestCase):
             self.archive, {"Album/photo(1).jpg": b"media", "Album/photo(1).jpg.json": b"bad JSON"}
         )
         report = audit_report([self.archive])
-        self.assertEqual(report["associations"]["missing"], 1)
+        self.assertEqual(report["associations"]["ambiguous"], 1)
+        self.assertEqual(report["files"][0]["failed_sidecars"], ["Album/photo(1).jpg.json"])
         self.assertEqual(report["warnings"], {"Unreadable JSON files (skipped)": 1})
         self.assertIn("Inspection warnings", self.invoke(self.archive)[1])
         self.archive.write_bytes(b"not a ZIP")
         code, _, error = self.invoke(self.archive)
         self.assertEqual(code, 1)
         self.assertIn("Error:", error)
+
+    def test_two_original_contents_without_metadata_make_the_edit_ambiguous(self):
+        write_zip(
+            self.archive,
+            {
+                "Year/photo(1).jpg": b"one original",
+                "Year/photo-edited(1).jpg": b"edit",
+            },
+        )
+        other = self.root / "other.zip"
+        write_zip(other, {"Year/photo(1).jpg": b"another original"})
+        report = audit_report([self.archive, other])
+        edit = next(row for row in report["files"] if row["kind"] == "numbered_edit")
+        self.assertEqual(edit["association"], "ambiguous")
+        self.assertEqual(edit["date_status"], "unresolved")
+        self.assertEqual(len(edit["originals"]), 2)
+        self.assertEqual(edit["sidecars"], [])
 
 
 class AuditProperties(unittest.TestCase):

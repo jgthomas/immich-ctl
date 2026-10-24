@@ -123,6 +123,31 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   leaves source ZIPs and the existing extraction unchanged. Upload and validate
   the recovery folder using the commands below.
 
+## Reconcile Takeout files with extracted folders
+
+```bash
+./immich-takeout reconcile --date-range 2022 \
+  --extracted /path/to/extracted-2022 --extracted /path/to/recovered-2022 \
+  ~/Downloads/takeout-EXPORT-*.zip
+```
+
+- Repeat `--extracted` for normal and recovery folders; omit folders not yet created.
+  The report compares SHA-256 checksums, including renamed and byte-identical copies.
+- Lists missing selected media, conflicting source metadata and local JSON problems.
+  Rejected own sidecars block inherited edit dates and remain named exceptions.
+  Unknown dates, ambiguous associations and unpaired files appear separately as
+  **export-wide exceptions**, without assigning dates from folder names.
+- Album-folder copies count as separate source files; distinct checksum counts are
+  also shown. Metadata records without matching media filenames are listed separately.
+- Add `--details` to list all files and export-wide exceptions, or `--json` for the full report.
+  Trashed/partner items are excluded when their metadata is consistent; add
+  `--include-partner` to include partner items.
+- Reads source media and local files without writing files, invoking immich-go or
+  contacting Immich. Checksums read selected media and export-wide exceptions,
+  so large exports can take time. Exit `0` means the report was generated, even with findings;
+  operational errors return `1`. Bytes and JSON availability do not establish
+  metadata or album fidelity. Use the validator below to check Immich after upload.
+
 ## Upload an extracted folder
 
 Keep the extracted media and `.JSON` sidecars together. Preview the upload:

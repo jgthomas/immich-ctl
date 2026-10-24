@@ -17,6 +17,7 @@ from uuid import uuid4
 from immich_ctl.config import ConfigError, load_config
 from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
 from immich_ctl.takeout_audit import audit
+from immich_ctl.takeout_reconcile import reconcile
 from immich_ctl.takeout_recover import RecoveryError, recover
 from immich_ctl.upload_output import run_upload
 
@@ -201,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         ("query", "Read-only metadata counts, albums and optional item list"),
         ("audit", "Read-only audit of numbered media and edited variants across the export"),
         ("recover", "Recover missing numbered edits into a separate upload-ready folder"),
+        ("reconcile", "Read-only checksum coverage and exceptions across extracted folders"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
         ("upload", "Upload directly from the ZIPs using immich-go"),
     ):
@@ -219,6 +221,25 @@ def main(argv: list[str] | None = None) -> int:
             metavar="DATES",
             help="Year, month, day, or inclusive range: 2022; 2022-07-15; 2020,2022",
         )
+        if name == "reconcile":
+            sub.add_argument(
+                "--extracted",
+                required=True,
+                action="append",
+                type=Path,
+                metavar="DIRECTORY",
+                help="Normal/recovery folder; repeat for more folders",
+            )
+            sub.add_argument(
+                "--details", action="store_true", help="List all files and export-wide exceptions"
+            )
+            sub.add_argument(
+                "--json", action="store_true", help="Print the complete report as JSON"
+            )
+            sub.add_argument(
+                "--include-partner", action="store_true", help="Include partner-shared media"
+            )
+            continue
         if name == "recover":
             sub.add_argument("--extracted", required=True, type=Path, metavar="DIRECTORY")
         if name == "query":
@@ -243,6 +264,16 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         if args.action == "audit":
             audit(paths, details=args.details, json_output=args.json)
+            return 0
+        if args.action == "reconcile":
+            reconcile(
+                paths,
+                args.extracted,
+                args.date_range,
+                include_partner=args.include_partner,
+                details=args.details,
+                json_output=args.json,
+            )
             return 0
         if args.action == "recover":
             args.log_file = log_path(args.action, args.log_file)

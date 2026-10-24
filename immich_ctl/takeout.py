@@ -26,6 +26,7 @@ class Coverage:
     unmatched_files: set[FileKey] = field(default_factory=set)
     file_owners: dict[FileKey, set[ItemIdentity]] = field(default_factory=dict)
     file_sidecars: dict[FileKey, set[str]] = field(default_factory=dict)
+    failed_sidecars: dict[FileKey, set[str]] = field(default_factory=dict)
     sidecars_without_local_match: int = 0
     ambiguous_sidecars: int = 0
     item_paths: dict[ItemIdentity, set[str]] = field(default_factory=dict)
@@ -123,6 +124,17 @@ def match_media(
     return set()
 
 
+def record_failed_sidecar(
+    coverage: Coverage,
+    relative: PurePosixPath,
+    filenames: dict[str, set[FileKey]],
+    stems: dict[tuple[str, str], set[FileKey]],
+) -> None:
+    """Retain filename-based evidence without inventing an owner or using a JSON title."""
+    for candidate in match_media(relative, "", filenames, stems):
+        coverage.failed_sidecars.setdefault(candidate, set()).add(str(relative))
+
+
 def inspect_archives(paths: list[Path]) -> Inspection:
     """Collect metadata items, album membership and file counts across ZIP parts."""
     items: Items = {}
@@ -171,14 +183,17 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                     continue
                 if entry.file_size > 8 * 1024 * 1024:
                     warnings["JSON files larger than 8 MiB (skipped)"] += 1
+                    record_failed_sidecar(coverage, relative, filenames, stems)
                     continue
                 try:
                     data = json.loads(archive.read(entry))
                 except (ValueError, UnicodeError):
                     warnings["Unreadable JSON files (skipped)"] += 1
+                    record_failed_sidecar(coverage, relative, filenames, stems)
                     continue
                 if not isinstance(data, dict):
                     warnings["Non-object JSON files (skipped)"] += 1
+                    record_failed_sidecar(coverage, relative, filenames, stems)
                     continue
                 # Accept both current metadata.json and older albumData wrappers.
                 album = data.get("albumData")
@@ -190,6 +205,7 @@ def inspect_archives(paths: list[Path]) -> Inspection:
                     continue
                 if not is_media:
                     warnings["Unrecognised JSON files (skipped)"] += 1
+                    record_failed_sidecar(coverage, relative, filenames, stems)
                     continue
                 sidecars += 1
                 url = data.get("url")
@@ -274,14 +290,22 @@ def selected_media_files(
         filenames[key[0]].add(key)
     edited: set[FileKey] = set()
     for key in coverage.unmatched_files:
-        if key in coverage.file_owners or media_type(key[0]) == "Other":
+        if (
+            key in coverage.file_owners
+            or key in coverage.failed_sidecars
+            or media_type(key[0]) == "Other"
+        ):
             continue
         path = PurePosixPath(key[0])
         original_path = edited_original_path(path)
         if original_path is None:
             continue
         originals = filenames.get(str(original_path), set())
-        if len(originals) == 1 and originals <= direct:
+        if (
+            len(originals) == 1
+            and originals <= direct
+            and not originals.intersection(coverage.failed_sidecars)
+        ):
             edited.add(key)
     return direct, edited
 

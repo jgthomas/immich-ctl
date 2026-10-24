@@ -23,21 +23,32 @@ def numbered_media(coverage: Coverage) -> list[dict[str, Any]]:
         original = edited_original_path(path)
         kind = "numbered_edit" if original is not None else "numbered_media"
         own_claims = coverage.file_owners.get(key, set())
+        own_failed = coverage.failed_sidecars.get(key, set())
         originals = filenames.get(str(original), set()) if original is not None else set()
         association = "missing"
         association_files: set[FileKey] = set()
-        if own_claims:
+        if own_failed:
+            association = "ambiguous"
+            association_files = {key}
+        elif own_claims:
             # Own metadata takes precedence, even when it is ambiguous or undated.
             association = "direct" if key in coverage.matched_files else "ambiguous"
             association_files = {key}
         elif originals:
             association_files = originals
-            if len(originals) == 1 and originals <= coverage.matched_files:
+            if (
+                len(originals) == 1
+                and originals <= coverage.matched_files
+                and not originals.intersection(coverage.failed_sidecars)
+            ):
                 association = "candidate"
-            elif len(originals) > 1 or any(coverage.file_owners.get(k) for k in originals):
+            elif len(originals) > 1 or any(
+                coverage.file_owners.get(k) or coverage.failed_sidecars.get(k) for k in originals
+            ):
                 association = "ambiguous"
         owners = set().union(*(coverage.file_owners.get(k, set()) for k in association_files))
         sidecars = set().union(*(coverage.file_sidecars.get(k, set()) for k in association_files))
+        failed = set().union(*(coverage.failed_sidecars.get(k, set()) for k in association_files))
         year, date_status = "Unknown", "unresolved"
         if association in {"direct", "candidate"} and len(owners) == 1:
             times = coverage.capture_times.get(next(iter(owners)), set())
@@ -58,7 +69,8 @@ def numbered_media(coverage: Coverage) -> list[dict[str, Any]]:
                 "originals": [
                     {"path": k[0], "crc32": f"{k[1]:08x}", "size": k[2]} for k in sorted(originals)
                 ],
-                "sidecars": sorted(sidecars),
+                "sidecars": sorted(sidecars | failed),
+                "failed_sidecars": sorted(failed),
             }
         )
     return rows
