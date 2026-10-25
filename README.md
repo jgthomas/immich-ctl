@@ -17,6 +17,10 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 Start with a year containing few photos. Run these steps from the repository root
 in Bash.
 
+In the commands below, **`--output` creates a new folder**; **`--extracted` reads an
+existing folder**. The folders stay separate. Later checks read them together to
+account for all the files prepared for upload.
+
 1. **Set the year, paths and account.** Replace the export pattern and account name;
    include all ZIP parts from the same export.
 
@@ -36,54 +40,60 @@ in Bash.
    ./immich-takeout audit "${archives[@]}"
    ```
 
-3. **Extract the normal pass into `$normal_extract`.** Keep media and generated
-   `.JSON` sidecars together. This handles direct matches and recognised edits,
-   including many `(n)` files.
+3. **Extract from the ZIPs.** Creates `$normal_extract` containing the media and
+   sidecars immich-go can match normally, including many `(n)` files. Keep each
+   media file and its `.JSON` sidecar together.
 
    ```bash
    ./immich-takeout extract --date-range "$year" --output "$normal_extract" "${archives[@]}"
    ```
 
-4. **Recover omitted numbered edits into `$recovered_edits`.** This reads the normal
-   extraction to find omissions. Preview first, then repeat without `--dry-run` to
-   create the recovery folder and manifest.
+4. **Extract the numbered edits missed by step 3.** Reads the ZIPs and checks
+   `$normal_extract` to avoid recovering files already present. Writes recoverable
+   omissions into `$recovered_edits`, leaving `$normal_extract` unchanged.
 
    ```bash
    ./immich-takeout recover --date-range "$year" --extracted "$normal_extract" \
-     --output "$recovered_edits" --dry-run "${archives[@]}"
+     --output "$recovered_edits" "${archives[@]}"
    ```
 
-5. **Report remaining exceptions.** Reconciliation reads both folders without changing
-   them. Omit `--extracted "$recovered_edits"` if no recovery folder was created.
+   Add `--dry-run` to preview recovery without creating files.
+
+5. **Check what is still missing or incorrect.** Compares the original ZIPs with
+   the combined contents of the two folders. Both `--extracted` arguments are
+   **inputs**: this command prints a report and creates no media or folders.
 
    ```bash
    ./immich-takeout reconcile --date-range "$year" \
      --extracted "$normal_extract" --extracted "$recovered_edits" --details "${archives[@]}"
    ```
 
-   Resolve missing files, metadata/album differences, conflicts and unexpected media.
-   Put manually recovered files with verified sidecars in `$reviewed_files`, add
-   `--extracted "$reviewed_files"`, and reconcile again. Record deferred exceptions;
-   keep unresolved files out of upload folders. Unknown-date findings are export-wide.
+   Omit the recovery input if step 4 created no folder. Review missing files,
+   metadata/album differences, conflicts and unexpected media. If manual recovery
+   is needed, put verified files and sidecars in `$reviewed_files`, then repeat
+   this check with `--extracted "$reviewed_files"` added. Record deferred exceptions
+   and keep unresolved files out of upload folders. Unknown-date findings are export-wide.
 
-6. **Check server risks and preview the upload.** Include all prepared folders in the
+6. **Check server upload risks.** Include all prepared folders in the
    audit with repeated `--extracted` options; omit the recovery option if no folder was
    created. Review warnings about retained metadata, replacement and skips before
-   proceeding; a dry run uploads nothing.
+   proceeding. This check makes no server changes.
 
    ```bash
    ./immich-takeout audit --config "$config" --date-range "$year" \
      --extracted "$normal_extract" --extracted "$recovered_edits" "${archives[@]}"
-   ./immich-upload-folder "$normal_extract" --config "$config" --dry-run
    ```
 
-7. **Upload and validate each prepared folder.** Inspect the preview logs first;
-   repeat the preview, upload and validation for recovery/reviewed folders that exist.
+7. **Upload and validate each prepared folder.** Repeat these commands with
+   `$recovered_edits` and `$reviewed_files` for folders that exist.
 
    ```bash
    ./immich-upload-folder "$normal_extract" --config "$config"
    ./immich-validate-folder "$normal_extract" --config "$config" --details
    ```
+
+   To preview an upload first, add `--dry-run` to `immich-upload-folder` and inspect
+   its log. A dry run uploads nothing.
 
    Investigate skipped uploads and validation findings. Check dates, GPS, albums and
    playback. Keep the ZIPs and Google Photos until independent backup and restore
