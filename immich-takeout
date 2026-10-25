@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -15,11 +16,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from immich_ctl.config import ConfigError, load_config
+from immich_ctl.folder_validate import Client, ValidationError
 from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
 from immich_ctl.takeout_audit import audit
 from immich_ctl.takeout_reconcile import reconcile
 from immich_ctl.takeout_recover import RecoveryError, recover
 from immich_ctl.takeout_safety import check_collisions, log_has_errors
+from immich_ctl.takeout_upload_audit import redact, upload_audit
 from immich_ctl.upload_output import run_upload
 
 
@@ -209,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="action", required=True)
     for name, help_text in (
         ("query", "Read-only metadata counts, albums and optional item list"),
-        ("audit", "Read-only audit of numbered media and edited variants across the export"),
+        ("audit", "Read-only numbered-file audit and optional Immich upload-risk comparison"),
         ("recover", "Recover missing numbered edits into a separate upload-ready folder"),
         ("reconcile", "Read-only source byte/metadata checks across extracted folders"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
@@ -222,6 +225,33 @@ def main(argv: list[str] | None = None) -> int:
                 "--details", action="store_true", help="List numbered files and candidate sidecars"
             )
             sub.add_argument("--json", action="store_true", help="Print the full audit as JSON")
+            sub.add_argument(
+                "--config", type=Path, metavar="INI", help="Also compare with Immich, read-only"
+            )
+            sub.add_argument(
+                "--date-range",
+                type=date_selection,
+                metavar="DATES",
+                help="Dates for the server comparison; numbered audit remains export-wide",
+            )
+            sub.add_argument(
+                "--extracted",
+                type=Path,
+                action="append",
+                metavar="DIRECTORY",
+                help="Compare actual prepared upload folders instead of Takeout candidates (requires --config)",
+            )
+            sub.add_argument(
+                "--include-partner",
+                action="store_true",
+                help="Include partner Takeout candidates in the server comparison",
+            )
+            sub.add_argument(
+                "--timeout",
+                type=float,
+                default=30,
+                help="Server request timeout in seconds (default: 30)",
+            )
             continue
         sub.add_argument(
             "--date-range",
@@ -272,7 +302,24 @@ def main(argv: list[str] | None = None) -> int:
             with zipfile.ZipFile(path):
                 pass
         if args.action == "audit":
-            audit(paths, details=args.details, json_output=args.json)
+            server_audit = None
+            if not args.config and (args.extracted or args.date_range or args.include_partner):
+                raise TakeoutError("Server comparison options require --config INI.")
+            if not math.isfinite(args.timeout) or args.timeout <= 0:
+                raise TakeoutError("--timeout must be a positive finite number.")
+            if args.config:
+                server, key = load_config(args.config.expanduser())
+                server_audit = redact(
+                    upload_audit(
+                        paths,
+                        Client(server, key, args.timeout),
+                        selection=args.date_range,
+                        folders=args.extracted,
+                        include_partner=args.include_partner,
+                    ),
+                    key,
+                )
+            audit(paths, details=args.details, json_output=args.json, server_audit=server_audit)
             return 0
         if args.action == "reconcile":
             reconcile(
@@ -332,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except (
         TakeoutError,
+        ValidationError,
         RecoveryError,
         OSError,
         ValueError,

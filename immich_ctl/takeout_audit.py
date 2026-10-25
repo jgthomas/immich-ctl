@@ -107,8 +107,16 @@ def audit_report(paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def audit(paths: list[Path], *, details: bool = False, json_output: bool = False) -> None:
+def audit(
+    paths: list[Path],
+    *,
+    details: bool = False,
+    json_output: bool = False,
+    server_audit: dict[str, Any] | None = None,
+) -> None:
     report = audit_report(paths)
+    if server_audit is not None:
+        report["server_audit"] = server_audit
     if json_output:
         print(json.dumps(report, indent=2, ensure_ascii=True))
         return
@@ -147,7 +155,13 @@ def audit(paths: list[Path], *, details: bool = False, json_output: bool = False
         "Candidate associations require an exact original path and unambiguous metadata. "
         "Unknown/conflicting dates are grouped under Unknown; folder names do not supply dates."
     )
-    print(
-        "Album-folder copies count separately; repeated ZIP entries count once. "
-        "No media extraction, changes or server requests."
-    )
+    print("Album-folder copies count separately; repeated ZIP entries count once.")
+    if server_audit is None:
+        print("No media extraction, changes or server requests.")
+        print(
+            "Server comparison not run. Add --config INI to check retained metadata and replacement/skip risks."
+        )
+    else:
+        from immich_ctl.takeout_upload_audit import print_server_report
+
+        print_server_report(server_audit, details)

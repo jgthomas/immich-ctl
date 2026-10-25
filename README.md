@@ -8,6 +8,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - No third-party runtime packages.
 - For `immich-ping`: your Immich server URL and an API key with `user.read` permission.
 - For validation: an API key with `user.read`, `asset.read` and `album.read` permissions.
+- For server upload-risk audits: `user.read` and `asset.read` permissions.
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
 - For development: [uv](https://docs.astral.sh/uv/).
 
@@ -57,6 +58,8 @@ out of the proposed upload folders.
 For each prepared folder, preview, inspect the logs, upload, then validate:
 
 ```bash
+./immich-takeout audit --config "$config" --date-range "$year" \
+  --extracted "$normal" "${archives[@]}"
 ./immich-upload-folder "$normal" --config "$config" --dry-run
 ./immich-upload-folder "$normal" --config "$config"
 ./immich-validate-folder "$normal" --config "$config" --details
@@ -143,7 +146,7 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
 - Credentials use a private temporary config. Ambient immich-go config and
   `IMMICH_GO_*` settings are ignored.
 
-## Audit numbered Takeout files
+## Audit Takeout files and upload risks
 
 ```bash
 ./immich-takeout audit ~/Downloads/takeout-EXPORT-*.zip
@@ -160,6 +163,27 @@ matching issue, not confirmed extraction failures. Literal parentheses are
 preserved; numbering does not prove duplication. Other edit suffixes are not
 recognised. Album-folder copies count separately; repeated ZIP entries count once.
 The audit reads filenames and JSON only, without extraction or server access.
+
+Add `--config` for a read-only comparison with your Immich library:
+
+```bash
+./immich-takeout audit --config /path/to/account.ini --date-range 2022 \
+  --extracted /path/to/extracted-2022 ~/Downloads/takeout-EXPORT-*.zip
+```
+
+- Warns when existing checksums have metadata that immich-go will leave unchanged.
+- Warns about different-checksum filename/time matches: larger incoming files can
+  replace and permanently delete existing assets; equal/smaller files can be skipped
+  and their albums attached to the existing asset.
+- Checks possible collisions within the input and reports uncertain comparisons.
+- Repeat `--extracted` for recovery/reviewed folders. Omit it to inspect archive
+  candidates, whose filenames can differ from the prepared uploads.
+
+Server comparisons hash media and may take time. `--date-range` filters that
+comparison; numbered-file counts remain export-wide. Findings are snapshot warnings,
+not an upload guarantee; successful reports return exit status zero even with
+warnings. No files or server data are changed. Use `--details` or `--json` for findings.
+Server scope excludes locked, trashed and external-library assets.
 
 ## Recover omitted numbered edits
 

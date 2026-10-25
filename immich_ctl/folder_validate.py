@@ -75,6 +75,13 @@ class Client:
             raise ValidationError("Immich did not return valid JSON.") from None
 
     def matches(self, checksum: str, owner: str) -> list[dict[str, Any]]:
+        return self._search(checksum, owner)
+
+    def inventory(self, owner: str) -> list[dict[str, Any]]:
+        """Read an owned-asset snapshot; this never invokes an upload or write API."""
+        return self._search(None, owner)
+
+    def _search(self, checksum: str | None, owner: str) -> list[dict[str, Any]]:
         found: dict[str, dict[str, Any]] = {}
         # Explicit visibility is necessary: Immich 2 defaults searches to the timeline.
         # Hidden includes Live Photo motion assets; locked and trashed assets are excluded.
@@ -85,7 +92,7 @@ class Client:
                 result = self.read(
                     "/search/metadata",
                     {
-                        "checksum": checksum,
+                        **({"checksum": checksum} if checksum is not None else {}),
                         "visibility": visibility,
                         "withDeleted": False,
                         # withExif=true uses an inner join in Immich 2 and can hide
@@ -120,11 +127,15 @@ class Client:
                         actual = base64.b64decode(encoded, validate=True).hex()
                     except (ValueError, TypeError):
                         raise ValidationError("Search result lacks a valid checksum.") from None
-                    if actual != checksum:
+                    if len(actual) != 40:
+                        raise ValidationError("Search result lacks a valid checksum.")
+                    if checksum is not None and actual != checksum:
                         raise ValidationError(
                             "Search returned a different checksum; validation stopped."
                         )
                     if asset["ownerId"] == owner and not asset.get("isTrashed", False):
+                        if identity in found and found[identity]["checksum"] != encoded:
+                            raise ValidationError("Asset changed during search; retry the audit.")
                         found[identity] = asset
                 if "nextPage" not in assets:
                     raise ValidationError("Search response lacks pagination information.")
