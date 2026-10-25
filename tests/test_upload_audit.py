@@ -7,6 +7,7 @@ import io
 import json
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -155,6 +156,250 @@ class UploadAuditTests(unittest.TestCase):
 
     def report(self, **kwargs):
         return upload_audit([self.archive], self.client(), **kwargs)
+
+    def native_media(self, name, content, **metadata):
+        path = self.folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.with_name(path.name + ".JSON").write_text(json.dumps(self.native | metadata))
+        return path
+
+    def test_folder_existing_checksum_compares_every_explicit_metadata_field(self):
+        self.native_media(
+            "renamed.jpg", b"photo", latitude=51.5, longitude=-0.12, favorited=True, archived=True
+        )
+        self.asset.update(checksum=encoded(b"photo"), fileCreatedAt="2022-01-01T00:00:00Z")
+        report = self.report(folders=[self.folder])
+        self.assertTrue(report["has_warnings"])
+        self.assertEqual(report["summary"]["existing_checksum_files"], 1)
+        self.assertEqual(report["heuristic_matches"], [])
+        match = report["existing_checksum"][0]
+        self.assertEqual(match["sha1"], hashlib.sha1(b"photo").hexdigest())
+        self.assertEqual(match["path"], str(self.folder / "renamed.jpg"))
+        self.assertEqual(match["asset_id"], self.asset["id"])
+        self.assertEqual(match["original_filename"], "original.jpg")
+        self.assertEqual(match["unchecked"], [])
+        self.assertEqual(
+            set(match["differences"]),
+            {
+                field + " differs"
+                for field in (
+                    "dateTaken",
+                    "description",
+                    "latitude",
+                    "longitude",
+                    "favorited",
+                    "archived",
+                )
+            },
+        )
+
+    def test_folder_unusable_sidecars_do_not_supply_dates_or_hide_inputs(self):
+        self.assets = []
+        sidecar_path = self.folder / "renamed.jpg.JSON"
+        outside = self.native | {"dateTaken": "2022-01-01T00:00:00Z"}
+        for payload, issue in (
+            (None, "missing native sidecar"),
+            (b"not JSON", "invalid native sidecar"),
+            (
+                json.dumps(outside | {"software": "other"}).encode(),
+                "missing immich-go version marker",
+            ),
+        ):
+            with self.subTest(issue=issue):
+                sidecar_path.unlink(missing_ok=True)
+                if payload is not None:
+                    sidecar_path.write_bytes(payload)
+                report = self.report(folders=[self.folder], selection=SELECTION)
+                self.assertTrue(report["has_warnings"])
+                self.assertEqual(report["input_files"], 1)
+                row = report["unresolved_inputs"][0]
+                self.assertIsNone(row["capture_time"])
+                self.assertTrue(any(issue in message for message in row["issues"]))
+
+    def test_folder_invalid_fields_and_glob_paths_are_unverified(self):
+        self.assets = []
+        self.native_media("renamed.jpg", b"photo", latitude="north", favorited="yes")
+        report = self.report(folders=[self.folder])
+        issues = report["unresolved_inputs"][0]["issues"]
+        self.assertIn("invalid sidecar latitude", issues)
+        self.assertIn("invalid sidecar favorited", issues)
+        path = self.native_media("holiday[1].jpg", b"holiday", dateTaken="2022-01-01T00:00:00Z")
+        report = self.report(folders=[self.folder], selection=SELECTION)
+        row = next(row for row in report["unresolved_inputs"] if row["path"] == str(path))
+        self.assertIsNone(row["capture_time"])
+        self.assertTrue(any("glob characters" in issue for issue in row["issues"]))
+        self.assertTrue(report["has_warnings"])
+
+    def test_folder_selection_keeps_both_boundaries_and_continues_after_exclusions(self):
+        self.assets = []
+        for name, captured in (
+            ("a-before.jpg", "2022-12-31T23:59:59.999999Z"),
+            ("b-start.jpg", "2023-01-01T00:00:00Z"),
+            ("c-end.jpg", "2023-12-31T23:59:59.999999Z"),
+            ("d-after.jpg", "2024-01-01T00:00:00Z"),
+        ):
+            self.native_media(name, name.encode(), dateTaken=captured)
+        # Each selected file has a different explicit description on the server.
+        for name in ("b-start.jpg", "c-end.jpg", "renamed.jpg"):
+            item = copy.deepcopy(self.asset)
+            item.update(id=name, checksum=encoded((self.folder / name).read_bytes()))
+            self.assets.append(item)
+        report = self.report(folders=[self.folder], selection=SELECTION)
+        self.assertEqual(report["input_files"], 3)
+        self.assertEqual(
+            {Path(row["path"]).name for row in report["existing_checksum"]},
+            {"b-start.jpg", "c-end.jpg", "renamed.jpg"},
+        )
+
+    def test_archive_filtering_and_bad_sidecars_do_not_hide_later_media(self):
+        self.entries = {
+            "notes.txt": b"ignored",
+            "Photos from 2023/a.jpg": b"trashed",
+            "Photos from 2023/a.jpg.json": sidecar("a.jpg", "trash") | {"trashed": True},
+            "Photos from 2023/b.jpg": b"broken",
+            "Photos from 2023/b.jpg.json": b"not JSON",
+            **self.entries,
+        }
+        self.write()
+        report = self.report()
+        self.assertEqual(report["input_files"], 2)
+        self.assertEqual(
+            [row["path"] for row in report["heuristic_matches"]], ["Photos from 2023/photo.jpg"]
+        )
+        self.assertEqual(report["summary"]["unresolved_inputs"], 1)
+        self.assertTrue(report["has_warnings"])
+
+    def test_archive_directories_and_non_photo_entries_do_not_end_the_scan(self):
+        with zipfile.ZipFile(self.archive) as archive:
+            entries = [(entry, archive.read(entry)) for entry in archive.infolist()]
+        with zipfile.ZipFile(self.archive, "w") as archive:
+            archive.writestr("Takeout/Google Photos/", b"")
+            archive.writestr("Takeout/account.html", b"not photo metadata")
+            for entry, content in entries:
+                archive.writestr(entry, content)
+        self.asset["checksum"] = encoded(b"photo")
+        report = self.report()
+        self.assertEqual(report["input_files"], 1)
+        self.assertEqual(report["summary"]["existing_checksum_files"], 1)
+        self.assertIn("description differs", report["existing_checksum"][0]["differences"])
+
+    def test_each_independent_warning_sets_the_report_flag(self):
+        self.asset["checksum"] = encoded(b"photo")
+        self.asset.update(isFavorite=True, isArchived=True)
+        self.asset["exifInfo"].update(description="desired", latitude=51.5, longitude=-0.12)
+        self.assertFalse(self.report()["has_warnings"])
+        self.asset["exifInfo"]["description"] = "different"
+        report = self.report()
+        self.assertTrue(report["has_warnings"])
+        self.assertTrue(report["existing_checksum"][0]["differences"])
+        self.assertEqual(report["existing_checksum"][0]["unchecked"], [])
+        self.asset["exifInfo"]["description"] = "desired"
+        del self.asset["exifInfo"]["latitude"]
+        report = self.report()
+        self.assertTrue(report["has_warnings"])
+        self.assertEqual(report["existing_checksum"][0]["differences"], [])
+        self.assertTrue(report["existing_checksum"][0]["unchecked"])
+
+        self.assets = []
+        (self.folder / "notes.txt").write_text("unrecognised file")
+        report = self.report(folders=[self.folder])
+        self.assertTrue(report["input_warnings"])
+        self.assertEqual(report["unresolved_inputs"], [])
+        self.assertEqual(report["within_input_matches"], [])
+        self.assertTrue(report["has_warnings"])
+
+    def test_native_filename_alias_collisions_and_unknown_times_warn(self):
+        self.assets = []
+        self.native_media("original.jpg", b"larger original photo", fileName="distinct.jpg")
+        for captured, decision in (
+            ("2023-01-01T00:00:00Z", "replace_larger"),
+            ("not a date", "unknown_time"),
+        ):
+            with self.subTest(captured=captured):
+                self.native_media("renamed.jpg", b"photo", dateTaken=captured)
+                report = self.report(folders=[self.folder])
+                self.assertTrue(report["has_warnings"])
+                matches = report["within_input_matches"]
+                self.assertEqual(len(matches), 1)
+                self.assertEqual(matches[0]["path"], str(self.folder / "original.jpg"))
+                self.assertEqual(
+                    matches[0]["earlier_input"]["path"], str(self.folder / "renamed.jpg")
+                )
+                self.assertEqual(matches[0]["earlier_input"]["original_filename"], "original.jpg")
+                self.assertEqual(matches[0]["decision"], decision)
+                self.assertEqual(report["heuristic_matches"], [])
+
+    def test_two_server_assets_with_identical_bytes_are_explicitly_ambiguous(self):
+        self.asset.update(checksum=encoded(b"photo"), isFavorite=True, isArchived=True)
+        self.asset["exifInfo"].update(description="desired", latitude=51.5, longitude=-0.12)
+        self.assets.append(self.asset | {"id": "second"})
+        report = self.report()
+        self.assertTrue(report["has_warnings"])
+        self.assertEqual(report["summary"]["existing_checksum_files"], 1)
+        self.assertEqual(report["summary"]["metadata_unchecked_matches"], 2)
+        self.assertEqual(
+            {row["asset_id"] for row in report["existing_checksum"]}, {"remote/id", "second"}
+        )
+        for row in report["existing_checksum"]:
+            self.assertEqual(row["differences"], [])
+            self.assertIn("multiple server assets share this checksum", row["unchecked"])
+
+    def test_input_collision_scan_continues_past_identical_and_outside_time_candidates(self):
+        self.assets = []
+        self.native_media("a/copy.jpg", b"photo", fileName="renamed.jpg")
+        self.native_media(
+            "b/copy.jpg", b"old photo", fileName="renamed.jpg", dateTaken="2010-01-01T00:00:00Z"
+        )
+        candidate = self.native_media("c/copy.jpg", b"different photo", fileName="renamed.jpg")
+        report = self.report(folders=[self.folder])
+        self.assertTrue(report["has_warnings"])
+        self.assertEqual(report["input_files"], 4)
+        self.assertEqual(len(report["within_input_matches"]), 1)
+        match = report["within_input_matches"][0]
+        self.assertEqual(match["path"], str(self.folder / "renamed.jpg"))
+        self.assertEqual(match["earlier_input"]["path"], str(candidate))
+        self.assertEqual(match["decision"], "skip_smaller")
+
+    def test_identical_bytes_normalise_offset_dates_and_check_other_metadata_conflicts(self):
+        self.assets = []
+        self.native_media("copy.jpg", b"photo", dateTaken="2023-01-01T01:00:00+01:00")
+        report = self.report(folders=[self.folder])
+        self.assertEqual(report["input_metadata_conflicts"], [])
+        self.assertFalse(report["has_warnings"])
+        self.native_media(
+            "copy.jpg", b"photo", dateTaken="2023-01-01T01:00:00+01:00", description="different"
+        )
+        report = self.report(folders=[self.folder])
+        self.assertTrue(report["has_warnings"])
+        self.assertEqual(report["heuristic_matches"], [])
+        self.assertEqual(report["within_input_matches"], [])
+        self.assertEqual(report["unresolved_inputs"], [])
+        self.assertEqual(
+            report["input_metadata_conflicts"],
+            [
+                {
+                    "sha1": hashlib.sha1(b"photo").hexdigest(),
+                    "fields": ["description"],
+                    "paths": sorted(
+                        str(self.folder / name) for name in ("copy.jpg", "renamed.jpg")
+                    ),
+                }
+            ],
+        )
+
+    def test_matching_window_exact_and_just_outside_boundaries(self):
+        base = datetime(2023, 1, 1, tzinfo=UTC)
+        for seconds, expected in (
+            (-6, False),
+            (-5.000001, False),
+            (-5, True),
+            (4.999999, True),
+            (5, False),
+        ):
+            with self.subTest(seconds=seconds):
+                incoming = (base + timedelta(seconds=seconds)).isoformat()
+                self.assertIs(match_window(incoming, base.isoformat()), expected)
 
     def test_larger_equal_and_smaller_different_content_are_distinguished(self):
         before = self.archive.read_bytes()
@@ -307,6 +552,7 @@ class UploadAuditTests(unittest.TestCase):
         self.write()
         report = self.report()
         self.assertEqual(report["summary"]["input_metadata_conflicts"], 1)
+        self.assertTrue(report["has_warnings"])
         self.assertIn("dateTaken", report["input_metadata_conflicts"][0]["fields"])
         code, output, error = self.invoke()
         self.assertEqual(code, 0, error)
