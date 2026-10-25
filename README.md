@@ -23,8 +23,9 @@ in Bash.
    ```bash
    year=2022
    archives=(~/Downloads/takeout-EXPORT-*.zip)
-   normal="$HOME/Pictures/immich-$year"
-   recovered="${normal}-recovered"
+   normal_extract="$HOME/Pictures/immich-$year"
+   recovered_edits="${normal_extract}-recovered"
+   reviewed_files="${normal_extract}-reviewed"
    config="$HOME/.config/immich-ctl/ACCOUNT.ini"
    ```
 
@@ -35,32 +36,34 @@ in Bash.
    ./immich-takeout audit "${archives[@]}"
    ```
 
-3. **Extract the normal pass.** Keep media and generated `.JSON` sidecars together.
-   This handles direct matches and recognised edits, including many `(n)` files.
+3. **Extract the normal pass into `$normal_extract`.** Keep media and generated
+   `.JSON` sidecars together. This handles direct matches and recognised edits,
+   including many `(n)` files.
 
    ```bash
-   ./immich-takeout extract --date-range "$year" --output "$normal" "${archives[@]}"
+   ./immich-takeout extract --date-range "$year" --output "$normal_extract" "${archives[@]}"
    ```
 
-4. **Recover omitted numbered edits.** Preview first. If recovery is needed, inspect
-   the findings, then repeat without `--dry-run` to create a separate folder and manifest.
+4. **Recover omitted numbered edits into `$recovered_edits`.** This reads the normal
+   extraction to find omissions. Preview first, then repeat without `--dry-run` to
+   create the recovery folder and manifest.
 
    ```bash
-   ./immich-takeout recover --date-range "$year" --extracted "$normal" \
-     --output "$recovered" --dry-run "${archives[@]}"
+   ./immich-takeout recover --date-range "$year" --extracted "$normal_extract" \
+     --output "$recovered_edits" --dry-run "${archives[@]}"
    ```
 
-5. **Reconcile and review remaining exceptions.** Omit `--extracted "$recovered"`
-   if no recovery folder was created.
+5. **Report remaining exceptions.** Reconciliation reads both folders without changing
+   them. Omit `--extracted "$recovered_edits"` if no recovery folder was created.
 
    ```bash
    ./immich-takeout reconcile --date-range "$year" \
-     --extracted "$normal" --extracted "$recovered" --details "${archives[@]}"
+     --extracted "$normal_extract" --extracted "$recovered_edits" --details "${archives[@]}"
    ```
 
    Resolve missing files, metadata/album differences, conflicts and unexpected media.
-   Put manually recovered files with verified sidecars in a separate reviewed folder,
-   add it with another `--extracted`, and reconcile again. Record deferred exceptions;
+   Put manually recovered files with verified sidecars in `$reviewed_files`, add
+   `--extracted "$reviewed_files"`, and reconcile again. Record deferred exceptions;
    keep unresolved files out of upload folders. Unknown-date findings are export-wide.
 
 6. **Check server risks and preview the upload.** Include all prepared folders in the
@@ -70,16 +73,16 @@ in Bash.
 
    ```bash
    ./immich-takeout audit --config "$config" --date-range "$year" \
-     --extracted "$normal" --extracted "$recovered" "${archives[@]}"
-   ./immich-upload-folder "$normal" --config "$config" --dry-run
+     --extracted "$normal_extract" --extracted "$recovered_edits" "${archives[@]}"
+   ./immich-upload-folder "$normal_extract" --config "$config" --dry-run
    ```
 
 7. **Upload and validate each prepared folder.** Inspect the preview logs first;
    repeat the preview, upload and validation for recovery/reviewed folders that exist.
 
    ```bash
-   ./immich-upload-folder "$normal" --config "$config"
-   ./immich-validate-folder "$normal" --config "$config" --details
+   ./immich-upload-folder "$normal_extract" --config "$config"
+   ./immich-validate-folder "$normal_extract" --config "$config" --details
    ```
 
    Investigate skipped uploads and validation findings. Check dates, GPS, albums and
