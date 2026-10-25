@@ -585,6 +585,36 @@ class ApiTests(unittest.TestCase):
             validation.compare({"archived": True}, {"visibility": "archive"}, set()), ([], [], 1)
         )
 
+    def test_native_omissions_are_unverified_and_explicit_zero_false_are_compared(self):
+        metadata = {
+            "dateTaken": "2023-01-01T00:00:00Z",
+            "description": "A description",
+            "latitude": 51.5,
+        }
+        asset = {
+            "fileCreatedAt": "2023-01-01T00:00:00Z",
+            "isFavorite": True,
+            "isArchived": True,
+            "exifInfo": {"latitude": 51.5, "longitude": 100, "description": "A description"},
+        }
+        differences, unchecked, checked = validation.compare(metadata, asset, set(), native=True)
+        self.assertEqual(differences, [])
+        self.assertEqual(checked, 3)
+        self.assertEqual(
+            set(unchecked),
+            {
+                f"sidecar omits {field}; source value unverified"
+                for field in ("longitude", "favorited", "archived")
+            },
+        )
+        explicit = metadata | {"longitude": 0, "favorited": False, "archived": False}
+        differences, unchecked, checked = validation.compare(explicit, asset, set(), native=True)
+        self.assertEqual(
+            set(differences), {"longitude differs", "favorited differs", "archived differs"}
+        )
+        self.assertEqual(unchecked, [])
+        self.assertEqual(checked, 6)
+
     def test_http_failures_redirects_connection_errors_and_invalid_json(self):
         for outcome in (
             HTTPError("https://example", code, "secret response", {}, io.BytesIO(b"secret"))

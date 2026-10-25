@@ -78,14 +78,20 @@ class Client:
         return self._search(checksum, owner)
 
     def inventory(self, owner: str) -> list[dict[str, Any]]:
-        """Read an owned-asset snapshot; this never invokes an upload or write API."""
-        return self._search(None, owner)
+        """Read the uploader's owned-asset scope, including trash, without writes."""
+        return self._search(None, owner, include_trashed=True)
 
-    def _search(self, checksum: str | None, owner: str) -> list[dict[str, Any]]:
+    def _search(
+        self, checksum: str | None, owner: str, *, include_trashed: bool = False
+    ) -> list[dict[str, Any]]:
         found: dict[str, dict[str, Any]] = {}
         # Explicit visibility is necessary: Immich 2 defaults searches to the timeline.
-        # Hidden includes Live Photo motion assets; locked and trashed assets are excluded.
-        for visibility in ("timeline", "archive", "hidden"):
+        # Hidden includes Live Photo motion assets. The uploader also searches trash;
+        # the post-upload validator must not accept trashed copies as preserved uploads.
+        queries = [(visibility, False) for visibility in ("timeline", "archive", "hidden")]
+        if include_trashed:
+            queries += [(visibility, True) for visibility in ("timeline", "archive", "hidden")]
+        for visibility, trash_only in queries:
             page = 1
             seen: set[str] = set()
             while True:
@@ -94,7 +100,8 @@ class Client:
                     {
                         **({"checksum": checksum} if checksum is not None else {}),
                         "visibility": visibility,
-                        "withDeleted": False,
+                        "withDeleted": include_trashed,
+                        **({"trashedAfter": "0001-01-01T00:00:00Z"} if trash_only else {}),
                         # withExif=true uses an inner join in Immich 2 and can hide
                         # uploads whose metadata jobs have not run. Read details separately.
                         "withExif": False,
@@ -133,7 +140,9 @@ class Client:
                         raise ValidationError(
                             "Search returned a different checksum; validation stopped."
                         )
-                    if asset["ownerId"] == owner and not asset.get("isTrashed", False):
+                    if asset["ownerId"] == owner and (
+                        include_trashed or not asset.get("isTrashed", False)
+                    ):
                         if identity in found and found[identity]["checksum"] != encoded:
                             raise ValidationError("Asset changed during search; retry the audit.")
                         found[identity] = asset
@@ -168,7 +177,7 @@ def timestamp(value: Any) -> datetime | None:
 
 
 def compare(
-    metadata: dict[str, Any], asset: dict[str, Any], albums: set[str]
+    metadata: dict[str, Any], asset: dict[str, Any], albums: set[str], *, native: bool = False
 ) -> tuple[list[str], list[str], int]:
     """Compare only explicit sidecar values; omitted Go omitempty fields are unknown."""
     differences: list[str] = []
@@ -178,6 +187,8 @@ def compare(
     exif = exif if isinstance(exif, dict) else {}
     for field in ("dateTaken", "description", "latitude", "longitude", "favorited", "archived"):
         if field not in metadata:
+            if native:
+                unchecked.append(f"sidecar omits {field}; source value unverified")
             continue
         expected = metadata[field]
         actual: Any
@@ -367,7 +378,7 @@ def validate(folder: Path, client: Client) -> dict[str, Any]:
                 if metadata.get("albums") and asset["id"] not in album_cache:
                     album_cache[asset["id"]] = client.albums(asset["id"])
                 differences, unchecked, checked = compare(
-                    metadata, asset, album_cache.get(asset["id"], set())
+                    metadata, asset, album_cache.get(asset["id"], set()), native=True
                 )
                 if not checked:
                     unchecked.append("no comparable sidecar metadata")

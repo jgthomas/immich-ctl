@@ -8,7 +8,8 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - No third-party runtime packages.
 - For `immich-ping`: your Immich server URL and an API key with `user.read` permission.
 - For validation: an API key with `user.read`, `asset.read` and `album.read` permissions.
-- For server upload-risk audits: `user.read` and `asset.read` permissions.
+- For server upload-risk audits: `user.read` and `asset.read`; also `album.read`
+  when the input has album memberships.
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
 - For development: [uv](https://docs.astral.sh/uv/).
 
@@ -74,12 +75,14 @@ account for all the files prepared for upload.
    this check with `--extracted "$reviewed_files"` added. Record deferred exceptions
    and keep unresolved files out of upload folders. Unknown-date findings are export-wide.
 
-6. **Check server upload risks.** Include all prepared folders in the
-   audit with repeated `--extracted` options; omit the recovery option if no folder was
-   created. Review warnings about retained metadata, replacement and skips before
-   proceeding. This check makes no server changes.
+6. **Repair stored filenames, then check upload risks.** Repair each prepared folder
+   so its JSON `fileName` values match the media filenames. Omit recovery commands
+   and inputs if no recovery folder was created. The audit makes no server changes;
+   review its warnings about retained metadata, replacement and skips before proceeding.
 
    ```bash
+   ./immich-repair-filenames "$normal_extract"
+   ./immich-repair-filenames "$recovered_edits"
    ./immich-takeout audit --config "$config" --date-range "$year" \
      --extracted "$normal_extract" --extracted "$recovered_edits" "${archives[@]}"
    ```
@@ -186,6 +189,8 @@ and `-edited` variants by capture year, separating direct sidecar matches,
 candidate original sidecars, ambiguous associations and missing metadata.
 Add `--details` for filenames and proposed sidecars, or `--json` for the full report.
 Files with unresolved, missing or conflicting dates appear under `Unknown`.
+Duplicate album titles across source directories are listed separately for the
+whole export. Choose distinct titles for separate albums, or explicitly accept a merge.
 
 Potentially affected edits are filename-based candidates for the numbered-edit
 matching issue, not confirmed extraction failures. Literal parentheses are
@@ -205,14 +210,23 @@ Add `--config` for a read-only comparison with your Immich library:
   replace and permanently delete existing assets; equal/smaller files can be skipped
   and their albums attached to the existing asset.
 - Checks possible collisions within the input and reports uncertain comparisons.
+- Warns about ambiguous source titles used by the input and multiple destination
+  albums sharing a relevant title. One matching destination album is normal reuse.
+- Flags identical input bytes with differing album memberships, listing the files
+  and combined memberships to preserve. Consolidate memberships on every copy or
+  prepare one upload per checksum; the script does not change albums or remove files.
 - Repeat `--extracted` for recovery/reviewed folders. Omit it to inspect archive
   candidates, whose filenames can differ from the prepared uploads.
 
-Server comparisons hash media and may take time. `--date-range` filters that
-comparison; numbered-file counts remain export-wide. Findings are snapshot warnings,
+Server comparisons hash media and may take time. `--date-range` filters archive
+candidates; supplied upload folders are always audited in full, with warnings for
+files outside the requested dates. Numbered-file counts remain export-wide. Findings are snapshot warnings,
 not an upload guarantee; successful reports return exit status zero even with
 warnings. No files or server data are changed. Use `--details` or `--json` for findings.
-Server scope excludes locked, trashed and external-library assets.
+Server scope includes trash, matching immich-go's inventory; locked and
+external-library assets are excluded. Trashed checksum matches are flagged because
+they may prevent an active upload. Native sidecar omissions are reported as unverified
+when comparing existing metadata; the audit does not infer zero/false source values.
 
 ## Recover omitted numbered edits
 
@@ -273,6 +287,28 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   operational errors return `1`. These are local extraction checks; use the validator
   below to check Immich after upload.
 
+## Repair extracted filenames
+
+Align each native JSON sidecar's `fileName` with its actual media filename:
+
+```bash
+./immich-repair-filenames /path/to/extracted-2022
+```
+
+Add `--dry-run` to preview. Works recursively on normal or recovered extractions,
+changing mismatched `fileName` values in place. Media, sidecar filenames and other
+metadata values stay unchanged; rewritten JSON is formatted with two-space indentation.
+Already matching sidecars are left untouched, so reruns make no further changes.
+
+All media/sidecar pairs must pass inspection before writing starts. Missing,
+ambiguous, incompatible or malformed sidecars and unsupported files stop the run.
+Each JSON replacement is atomic and preserves its permissions. No server or
+immich-go access is needed; keep the Takeout ZIPs for re-extraction if needed.
+
+This removes stored-name aliases, not duplicate images. Matching basenames in other
+folders or on the server can still collide: rerun reconciliation and the upload-risk
+audit after repair. It does not repair metadata already uploaded to Immich.
+
 ## Upload an extracted folder
 
 Keep the extracted media and `.JSON` sidecars together. Preview the upload:
@@ -310,7 +346,9 @@ After uploading, check the extracted files against the same user's library:
 - Matches media by SHA-1 checksum, including archived and hidden assets; partner
   copies and trashed/locked assets do not confirm an upload.
 - Compares explicit JSON capture dates, descriptions, GPS (within 0.00001 degrees),
-  favourite/archive flags and album memberships. Omitted values are not inferred.
+  favourite/archive flags and album memberships. Missing supported fields are
+  reported as unverified, including omitted zero coordinates and false flags;
+  their source values cannot be established from the native sidecar alone.
 - Reports missing files, ambiguous matches, differences and incomplete checks.
   Unsupported metadata (including tags), XMP, unreadable sidecars and skipped files
   cannot establish complete validation. Album names are checked; duplicate names

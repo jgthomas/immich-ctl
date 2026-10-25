@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Align extracted immich-go sidecar filenames with their media filenames."""
+
+import sys
+
+from immich_ctl.folder_repair import main
+
+if __name__ == "__main__":
+    sys.exit(main())

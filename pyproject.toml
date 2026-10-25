@@ -22,7 +22,7 @@ mutation = [
 
 [tool.setuptools]
 packages = ["immich_ctl"]
-script-files = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder"]
+script-files = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder", "immich-repair-filenames"]
 
 [tool.uv]
 # Setuptools copies script-files into .venv/bin; refresh them when sources change.
@@ -33,6 +33,7 @@ cache-keys = [
     { file = "immich-takeout" },
     { file = "immich-upload-folder" },
     { file = "immich-validate-folder" },
+    { file = "immich-repair-filenames" },
     { file = "immich_ctl/**/*.py" },
     { file = "README.md" },
     { file = "MANIFEST.in" },
@@ -42,14 +43,14 @@ cache-keys = [
 target-version = "py311"
 line-length = 100
 # Include the executable Python scripts, which deliberately have no .py suffix.
-extend-include = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder"]
+extend-include = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder", "immich-repair-filenames"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder", "immich_ctl"]
+files = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder", "immich-repair-filenames", "immich_ctl"]
 # Give each extensionless script its own module name when checking them together.
 scripts_are_modules = true
 check_untyped_defs = true
@@ -58,7 +59,7 @@ check_untyped_defs = true
 # Start with shared parsing/validation; the extensionless CLI scripts are copied
 # so the existing tests run, but are not themselves mutation targets.
 source_paths = ["immich_ctl/"]
-also_copy = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder"]
+also_copy = ["immich-ping", "immich-describe-takeout", "immich-takeout", "immich-upload-folder", "immich-validate-folder", "immich-repair-filenames"]
 pytest_add_cli_args_test_selection = ["tests/"]
 
 [tool.pytest.ini_options]

@@ -232,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--date-range",
                 type=date_selection,
                 metavar="DATES",
-                help="Dates for the server comparison; numbered audit remains export-wide",
+                help="Filter Takeout candidates by date; upload folders are always fully audited",
             )
             sub.add_argument(
                 "--extracted",

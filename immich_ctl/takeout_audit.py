@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from immich_ctl.takeout import Coverage, FileKey, edited_original_path, inspect_archives, media_type
+from immich_ctl.takeout_metadata import duplicate_album_titles
 
 
 def numbered_media(coverage: Coverage) -> list[dict[str, Any]]:
@@ -78,7 +79,7 @@ def numbered_media(coverage: Coverage) -> list[dict[str, Any]]:
 
 def audit_report(paths: list[Path]) -> dict[str, Any]:
     """Read ZIP names and metadata only; media contents are never opened."""
-    *_, warnings, _sidecars, coverage = inspect_archives(paths)
+    _, _, titles, _, warnings, _sidecars, coverage = inspect_archives(paths)
     rows = numbered_media(coverage)
     associations = Counter(row["association"] for row in rows)
     years: defaultdict[str, Counter[str]] = defaultdict(Counter)
@@ -103,6 +104,7 @@ def audit_report(paths: list[Path]) -> dict[str, Any]:
             for year, counts in sorted(years.items())
         },
         "warnings": dict(sorted(warnings.items())),
+        "source_album_title_collisions": duplicate_album_titles(titles),
         "files": rows,
     }
 
@@ -147,6 +149,11 @@ def audit(
         print("\nInspection warnings")
         for message, count in report["warnings"].items():
             print(json.dumps(message, ensure_ascii=True), f": {count:,}")
+    for collision in report["source_album_title_collisions"]:
+        print(
+            "Export-wide duplicate album title (may merge): "
+            + json.dumps(collision, ensure_ascii=True)
+        )
     print(
         "\nScope: filename patterns, not proof of duplicates or extraction failures. "
         "Only -edited naming is recognised for edits. Other numbered names remain visible."

@@ -19,7 +19,12 @@ from immich_ctl.takeout import (
     media_type,
     possible_album_directories,
 )
-from immich_ctl.takeout_metadata import album_payloads, differences, expectation
+from immich_ctl.takeout_metadata import (
+    album_payloads,
+    differences,
+    duplicate_album_titles,
+    expectation,
+)
 from immich_ctl.takeout_recover import digest, folder_checksums
 
 
@@ -120,6 +125,8 @@ def reconcile_report(
                     }
                 )
     _, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
+    title_collisions = duplicate_album_titles(titles)
+    ambiguous_titles = {collision["title"] for collision in title_collisions}
     sidecar_owners: defaultdict[str, set[ItemIdentity]] = defaultdict(set)
     for owner, item_paths in coverage.item_paths.items():
         for name in item_paths:
@@ -221,7 +228,9 @@ def reconcile_report(
                 for directory in set(titles) | coverage.invalid_album_metadata
                 if owners & memberships.get(directory, set())
             ]
-            row["albums"] = sorted({titles.get(d, d) for d in directories})
+            row["albums"] = sorted({titles.get(d) or d for d in directories})
+            for title in sorted(set(row["albums"]) & ambiguous_titles):
+                row["issues"].append("ambiguous source album title: " + title)
             try:
                 album_sources[row["path"]] = album_payloads(coverage, directories)
                 if len(owners) == 1 and versions and not row["issues"]:
@@ -353,6 +362,7 @@ def reconcile_report(
         "warnings": dict(sorted(warnings.items())),
         "unclassified_source_files": unclassified,
         "possible_album_folders": sorted(possible_albums),
+        "source_album_title_collisions": title_collisions,
         "cross_date_conflicts": cross_date_conflicts,
         "local_media": local_media,
         "unexpected_local_files": unexpected_local,
@@ -399,6 +409,13 @@ def reconcile(
     ):
         print(f"| {label} | {report['selected'][key]:,} |")
     print(f"Distinct selected media checksums: {report['selected']['unique_checksums']:,}")
+    if report["source_album_title_collisions"]:
+        print(
+            f"Export-wide duplicate album titles: {len(report['source_album_title_collisions'])}; review whether these albums should merge."
+        )
+        if details:
+            for collision in report["source_album_title_collisions"]:
+                print(json.dumps(collision, ensure_ascii=True))
     print(
         f"Export-wide exceptions: {report['export_exception']['files']:,} files; not assigned to the selected dates."
     )

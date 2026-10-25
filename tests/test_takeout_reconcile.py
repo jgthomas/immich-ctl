@@ -89,6 +89,41 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(combined["selected"]["unique_checksums"], 2)
         self.assertTrue(combined["metadata_and_albums_validated"])
 
+    def test_separate_source_albums_with_the_same_title_are_not_certified_as_one(self):
+        self.entries = {
+            "First/metadata.json": {"title": "Trip"},
+            "First/one.jpg": b"one",
+            "First/one.jpg.json": sidecar("one.jpg", "one"),
+            "Second/metadata.json": {"title": "Trip"},
+            "Second/two.jpg": b"two",
+            "Second/two.jpg.json": sidecar("two.jpg", "two"),
+        }
+        self.write()
+        for name, contents in (("one.jpg", b"one"), ("two.jpg", b"two")):
+            media = self.local_file(self.extracted, name, contents)
+            native = Path(str(media) + ".JSON")
+            native.write_text(
+                json.dumps(json.loads(native.read_text()) | {"albums": [{"title": "Trip"}]})
+            )
+        report = self.report()
+        self.assertFalse(report["metadata_and_albums_validated"])
+        self.assertEqual(
+            report["source_album_title_collisions"],
+            [{"title": "Trip", "source_directories": ["First", "Second"]}],
+        )
+        self.assertTrue(
+            all("ambiguous source album title: Trip" in row["issues"] for row in report["files"])
+        )
+        self.assertEqual(
+            audit_report([self.archive])["source_album_title_collisions"],
+            report["source_album_title_collisions"],
+        )
+        # Repeating a ZIP part does not invent an additional source album.
+        self.assertEqual(
+            audit_report([self.archive, self.archive])["source_album_title_collisions"],
+            report["source_album_title_collisions"],
+        )
+
     def test_album_copies_count_as_source_files_and_conflicts_require_review(self):
         source = self.entries["Photos from 2023/photo.jpg.supplemental-metadata(1).json"]
         self.entries.update(

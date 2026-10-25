@@ -1,10 +1,23 @@
 """Compare Takeout metadata with the native JSON produced by immich-go 0.32.0."""
 
 import math
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
 from immich_ctl.takeout import Coverage, capture_time
+
+
+def duplicate_album_titles(titles: dict[str, str]) -> list[dict[str, Any]]:
+    """Separate source directories cannot be identified uniquely by a shared title."""
+    groups: defaultdict[str, list[str]] = defaultdict(list)
+    for directory, title in titles.items():
+        groups[title or directory].append(directory)
+    return [
+        {"title": title, "source_directories": sorted(directories)}
+        for title, directories in sorted(groups.items())
+        if len(directories) > 1
+    ]
 
 
 def number(value: Any, limit: float) -> float:
