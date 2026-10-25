@@ -14,61 +14,77 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 
 ## Migration runbook
 
-Work on one person's export and a small year first. Run from the repository root,
-using all ZIP parts together and that person's account INI:
+Start with a year containing few photos. Run these steps from the repository root
+in Bash.
 
-```bash
-year=2022
-archives=(~/Downloads/takeout-EXPORT-*.zip)
-normal="$HOME/Pictures/immich-$year"
-recovered="${normal}-recovered"
-config="$HOME/.config/immich-ctl/ACCOUNT.ini"
+1. **Set the year, paths and account.** Replace the export pattern and account name;
+   include all ZIP parts from the same export.
 
-./immich-takeout query --date-range "$year" "${archives[@]}"
-./immich-takeout audit "${archives[@]}"
-./immich-takeout extract --date-range "$year" --output "$normal" "${archives[@]}"
-```
+   ```bash
+   year=2022
+   archives=(~/Downloads/takeout-EXPORT-*.zip)
+   normal="$HOME/Pictures/immich-$year"
+   recovered="${normal}-recovered"
+   config="$HOME/.config/immich-ctl/ACCOUNT.ini"
+   ```
 
-Handle the extracted files in three stages before uploading:
+2. **Inspect the selection and numbered files.** Add `--details` to investigate findings.
 
-| Stage | Handling |
-|---|---|
-| 1. Normal pass | Keep the media and generated `.JSON` sidecars together. This includes direct matches and edits immich-go recognises; many `(n)` files already work normally. |
-| 2. Omitted numbered edits | Preview `recover`, then run it to prepare a separate folder. It recovers missing numbered `-edited` variants only when metadata is unambiguous, verifies their bytes and records a manifest. Numbering alone does not mean a file needs recovery. |
-| 3. Remaining exceptions | Use `reconcile` to identify missing files, ambiguous associations and unusable metadata. Review these manually; prepare confirmed files with verified metadata in a separate reviewed folder, or record why they are deferred/excluded. Keep unresolved files out of upload folders. Unknown-date exceptions are export-wide, not necessarily part of this year; do not infer dates from folder names. |
+   ```bash
+   ./immich-takeout query --date-range "$year" "${archives[@]}"
+   ./immich-takeout audit "${archives[@]}"
+   ```
 
-```bash
-./immich-takeout recover --date-range "$year" --extracted "$normal" \
-  --output "$recovered" --dry-run "${archives[@]}"
-# Inspect the preview before creating the recovery folder:
-./immich-takeout recover --date-range "$year" --extracted "$normal" \
-  --output "$recovered" "${archives[@]}"
+3. **Extract the normal pass.** Keep media and generated `.JSON` sidecars together.
+   This handles direct matches and recognised edits, including many `(n)` files.
 
-./immich-takeout reconcile --date-range "$year" \
-  --extracted "$normal" --extracted "$recovered" "${archives[@]}"
-```
+   ```bash
+   ./immich-takeout extract --date-range "$year" --output "$normal" "${archives[@]}"
+   ```
 
-Omit the recovery folder if none was created. Add `--details` when investigating
-audit/reconciliation findings; repeat `--extracted` to include a reviewed folder.
-Reconcile again after manual recovery. Resolve missing files and metadata/album
-differences before uploading. Review cross-year conflicts, possible albums without
-metadata and unexpected local media; move unrelated, outside-date or excluded files
-out of the proposed upload folders.
+4. **Recover omitted numbered edits.** Preview first. If recovery is needed, inspect
+   the findings, then repeat without `--dry-run` to create a separate folder and manifest.
 
-For each prepared folder, preview, inspect the logs, upload, then validate:
+   ```bash
+   ./immich-takeout recover --date-range "$year" --extracted "$normal" \
+     --output "$recovered" --dry-run "${archives[@]}"
+   ```
 
-```bash
-./immich-takeout audit --config "$config" --date-range "$year" \
-  --extracted "$normal" "${archives[@]}"
-./immich-upload-folder "$normal" --config "$config" --dry-run
-./immich-upload-folder "$normal" --config "$config"
-./immich-validate-folder "$normal" --config "$config" --details
-```
+5. **Reconcile and review remaining exceptions.** Omit `--extracted "$recovered"`
+   if no recovery folder was created.
 
-Repeat for recovery/reviewed folders that exist. Investigate skipped/discarded
-uploads and validation findings; a dry run does not upload files. Check dates,
-GPS, albums and playback. Keep the ZIPs and Google Photos until independent
-backup and restore testing are complete.
+   ```bash
+   ./immich-takeout reconcile --date-range "$year" \
+     --extracted "$normal" --extracted "$recovered" --details "${archives[@]}"
+   ```
+
+   Resolve missing files, metadata/album differences, conflicts and unexpected media.
+   Put manually recovered files with verified sidecars in a separate reviewed folder,
+   add it with another `--extracted`, and reconcile again. Record deferred exceptions;
+   keep unresolved files out of upload folders. Unknown-date findings are export-wide.
+
+6. **Check server risks and preview the upload.** Include all prepared folders in the
+   audit with repeated `--extracted` options; omit the recovery option if no folder was
+   created. Review warnings about retained metadata, replacement and skips before
+   proceeding; a dry run uploads nothing.
+
+   ```bash
+   ./immich-takeout audit --config "$config" --date-range "$year" \
+     --extracted "$normal" --extracted "$recovered" "${archives[@]}"
+   ./immich-upload-folder "$normal" --config "$config" --dry-run
+   ```
+
+7. **Upload and validate each prepared folder.** Inspect the preview logs first;
+   repeat the preview, upload and validation for recovery/reviewed folders that exist.
+
+   ```bash
+   ./immich-upload-folder "$normal" --config "$config"
+   ./immich-validate-folder "$normal" --config "$config" --details
+   ```
+
+   Investigate skipped uploads and validation findings. Check dates, GPS, albums and
+   playback. Keep the ZIPs and Google Photos until independent backup and restore
+   testing are complete.
 
 ## Describe a Takeout export
 
