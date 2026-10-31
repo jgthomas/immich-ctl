@@ -416,7 +416,7 @@ uv run --locked --no-sync mutmut browse
 ```
 
 GitHub Actions runs the standard checks on Python 3.11–3.14 using synthetic data
-and no Immich credentials. Mutation testing runs separately as a non-blocking
-report, with full logs and details in the `mutation-report` artifact for 14 days.
+and no Immich credentials. Mutation testing runs locally through `make check`
+only.
 CI integrations use the real immich-go binary and synthetic archives; live Immich
 uploads and server metadata jobs still require a trial against a server.
