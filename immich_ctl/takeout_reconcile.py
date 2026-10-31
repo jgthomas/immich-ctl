@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from immich_ctl.album_names import apply_names
 from immich_ctl.folder_compat import JSON_LIMIT, sidecar_state
 from immich_ctl.takeout import (
     Coverage,
@@ -106,6 +107,7 @@ def reconcile_report(
     selection: tuple[date, date],
     *,
     include_partner: bool = False,
+    album_map: Path | None = None,
 ) -> dict[str, Any]:
     paths = sorted({p.expanduser().resolve() for p in paths})
     folders = sorted({p.expanduser().resolve() for p in folders})
@@ -125,6 +127,8 @@ def reconcile_report(
                     }
                 )
     _, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
+    if album_map is not None:
+        apply_names(album_map, coverage, titles)
     title_collisions = duplicate_album_titles(titles)
     ambiguous_titles = {collision["title"] for collision in title_collisions}
     sidecar_owners: defaultdict[str, set[ItemIdentity]] = defaultdict(set)
@@ -392,8 +396,11 @@ def reconcile(
     include_partner: bool = False,
     details: bool = False,
     json_output: bool = False,
+    album_map: Path | None = None,
 ) -> None:
-    report = reconcile_report(paths, folders, selection, include_partner=include_partner)
+    report = reconcile_report(
+        paths, folders, selection, include_partner=include_partner, album_map=album_map
+    )
     if json_output:
         print(json.dumps(report, indent=2, ensure_ascii=True))
         return

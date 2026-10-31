@@ -59,6 +59,7 @@ jobs:
           uv run --locked immich-upload-folder --help
           uv run --locked immich-validate-folder --help
           uv run --locked immich-repair-filenames --help
+          uv run --locked immich-repair-album-names --help
 
   immich-go-integration:
     name: immich-go 0.32.0 integrations

@@ -311,6 +311,36 @@ This removes stored-name aliases, not duplicate images. Matching basenames in ot
 folders or on the server can still collide: rerun reconciliation and the upload-risk
 audit after repair. It does not repair metadata already uploaded to Immich.
 
+## Separate duplicate album names
+
+Append each source album's UTC date to duplicate titles in extracted JSON:
+
+```bash
+./immich-repair-album-names --title "Trip" \
+  --extracted /path/to/extracted --extracted /path/to/recovered \
+  --mapping /path/to/album-names.json --dry-run ~/Downloads/takeout-EXPORT-*.zip
+```
+
+Remove `--dry-run` to apply. Repeat `--title`, or omit it to handle all duplicate
+titles. Suffixes use the source album metadata's `date`, not photo capture dates.
+Missing dates, colliding dated names or uncertain memberships stop all writes.
+Membership is established by matching media bytes to source album directories.
+Only album titles change; media and other sidecar values are preserved. Existing
+matching repairs are left untouched. Each sidecar update is atomic; an interrupted
+batch can be rerun using the same mapping.
+
+Keep the mapping outside upload folders and reuse it when reconciling:
+
+```bash
+./immich-takeout reconcile --date-range 2022 \
+  --extracted /path/to/extracted --extracted /path/to/recovered \
+  --album-map /path/to/album-names.json ~/Downloads/takeout-EXPORT-*.zip
+```
+
+The mapping is checked against the original source directories and album dates.
+This script makes no server requests and does not rename existing Immich albums.
+Reapply it after re-extraction or additional recovery, then audit prepared folders.
+
 ## Upload an extracted folder
 
 Keep the extracted media and `.JSON` sidecars together. Preview the upload:

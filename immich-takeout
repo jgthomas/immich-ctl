@@ -262,6 +262,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         if name == "reconcile":
             sub.add_argument(
+                "--album-map",
+                type=Path,
+                metavar="JSON",
+                help="Source-verified dated album mapping from immich-repair-album-names",
+            )
+            sub.add_argument(
                 "--extracted",
                 required=True,
                 action="append",
@@ -329,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_partner=args.include_partner,
                 details=args.details,
                 json_output=args.json,
+                album_map=args.album_map,
             )
             return 0
         if args.action == "recover":
