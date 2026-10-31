@@ -253,6 +253,30 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   leaves source ZIPs and the existing extraction unchanged. Upload and validate
   the recovery folder using the commands below.
 
+## Recover omitted numbered files
+
+Run ordinary numbered-file recovery separately from numbered-edit recovery:
+
+```bash
+./immich-takeout recover-numbered --date-range 2022 \
+  --extracted /path/to/extracted-2022 --extracted /path/to/recovered-edits-2022 \
+  --output /path/to/recovered-numbered-2022 --dry-run ~/Downloads/takeout-EXPORT-*.zip
+```
+
+Remove `--dry-run` to recover into a new folder with a companion manifest.
+This handles numbered non-edited media such as `photo(1).jpg` or `date(2).gif`,
+including files whose Takeout JSON title has no extension. Only files with
+unambiguous own metadata and a capture date in the selected range are recovered.
+Trashed and partner items are excluded by default; `--include-partner` includes
+partner items. Missing, ambiguous or conflicting metadata stays unresolved.
+
+Repeat `--extracted` to check byte coverage across all existing folders. Media
+bytes and available metadata are preserved using the same verified extraction
+and publication safeguards as edit recovery. Dry runs write nothing and do not
+invoke immich-go. Recovery contacts no server. Include this additional folder in
+subsequent reconciliation, filename repair, upload-risk audits and validation;
+reapply any album-name mapping repairs before uploading.
+
 ## Reconcile Takeout files with extracted folders
 
 ```bash

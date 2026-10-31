@@ -214,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         ("query", "Read-only metadata counts, albums and optional item list"),
         ("audit", "Read-only numbered-file audit and optional Immich upload-risk comparison"),
         ("recover", "Recover missing numbered edits into a separate upload-ready folder"),
+        ("recover-numbered", "Recover missing numbered non-edited media into a separate folder"),
         ("reconcile", "Read-only source byte/metadata checks across extracted folders"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
         ("upload", "Upload directly from the ZIPs using immich-go"),
@@ -287,6 +288,15 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if name == "recover":
             sub.add_argument("--extracted", required=True, type=Path, metavar="DIRECTORY")
+        if name == "recover-numbered":
+            sub.add_argument(
+                "--extracted",
+                required=True,
+                type=Path,
+                action="append",
+                metavar="DIRECTORY",
+                help="Existing normal/recovery folder; repeat to check byte coverage across folders",
+            )
         if name == "query":
             sub.add_argument("--list", dest="list_items", action="store_true", help="List sidecars")
         else:
@@ -338,11 +348,12 @@ def main(argv: list[str] | None = None) -> int:
                 album_map=args.album_map,
             )
             return 0
-        if args.action == "recover":
+        if args.action in {"recover", "recover-numbered"}:
+            folders = args.extracted if args.action == "recover-numbered" else [args.extracted]
             args.log_file = log_path(args.action, args.log_file)
             log = args.log_file
             destination = args.output.expanduser().resolve()
-            for folder in (args.extracted.expanduser().resolve(), destination):
+            for folder in [*(p.expanduser().resolve() for p in folders), destination]:
                 if log == folder or folder in log.parents:
                     raise RecoveryError(
                         "The recovery log must be outside source and output folders."
@@ -360,12 +371,14 @@ def main(argv: list[str] | None = None) -> int:
 
             return recover(
                 paths,
-                args.extracted,
+                folders[0],
                 args.output,
                 args.date_range,
                 extract_recovery,
                 dry_run=args.dry_run,
                 include_partner=args.include_partner,
+                numbered_files=args.action == "recover-numbered",
+                other_extracted=folders[1:],
             )
         if args.action == "query" or (args.action == "extract" and args.dry_run):
             if args.action == "extract":

@@ -1,4 +1,4 @@
-"""Recover missing numbered edits using conservative metadata associations."""
+"""Recover numbered edits or ordinary numbered files with verified metadata."""
 
 import hashlib
 import json
@@ -13,7 +13,13 @@ from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
 
-from immich_ctl.takeout import FileKey, google_photos_path, inspect_archives, media_type
+from immich_ctl.takeout import (
+    FileKey,
+    ItemIdentity,
+    google_photos_path,
+    inspect_archives,
+    media_type,
+)
 from immich_ctl.takeout_audit import numbered_media
 from immich_ctl.takeout_metadata import album_payloads, differences, expectation
 
@@ -58,44 +64,63 @@ def recover(
     *,
     dry_run: bool = False,
     include_partner: bool = False,
+    numbered_files: bool = False,
+    other_extracted: list[Path] | None = None,
 ) -> int:
     """Plan read-only, generate metadata with immich-go, verify bytes, then publish."""
     extracted = extracted.expanduser().resolve()
+    folders = sorted({extracted, *(p.expanduser().resolve() for p in other_extracted or [])})
     output = output.expanduser()
     if output.is_symlink() or output.with_name(output.name + ".manifest.json").is_symlink():
         raise RecoveryError("Recovery output and manifest cannot be symlinks.")
     output = output.resolve()
     manifest = output.with_name(output.name + ".manifest.json")
-    if extracted == output or extracted in output.parents or output in extracted.parents:
+    if any(
+        folder == output or folder in output.parents or output in folder.parents
+        for folder in folders
+    ):
         raise RecoveryError("Recovery output must be separate from the extracted folder.")
     if output.exists() or manifest.exists():
         raise RecoveryError("Recovery requires a new --output path and companion manifest path.")
     if output in paths or manifest in paths or any(output in p.parents for p in paths):
         raise RecoveryError("Recovery output must be separate from the source ZIPs.")
-    existing = folder_checksums(extracted)
+    existing: defaultdict[str, list[str]] = defaultdict(list)
+    for folder in folders:
+        for checksum, relatives in folder_checksums(folder).items():
+            existing[checksum].extend(
+                str(folder / relative) if len(folders) > 1 else relative for relative in relatives
+            )
     _, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
-    rows = [row for row in numbered_media(coverage) if row["kind"] == "numbered_edit"]
+    kind = "numbered_media" if numbered_files else "numbered_edit"
+    association = "direct" if numbered_files else "candidate"
+    rows = [row for row in numbered_media(coverage) if row["kind"] == kind]
     report: dict[str, Any] = {
         "date_range": [day.isoformat() for day in selection],
         "archives": [str(p) for p in paths],
         "extracted": str(extracted),
+        "extracted_folders": [str(folder) for folder in folders],
+        "recovery_kind": kind,
         "output": str(output),
         "warnings": dict(warnings),
         "files": rows,
     }
+
     # Open members by ZipInfo, including split exports and repeated archive names.
     # Album membership comes from every copy of the Google Photos item, so all
     # those copies must agree on metadata before any one of them is selected.
-    for row in rows:
-        if row["association"] == "candidate":
-            original = row["originals"][0]
-            owner = next(
-                iter(
-                    coverage.file_owners[
-                        (original["path"], int(original["crc32"], 16), original["size"])
-                    ]
-                )
+    def owner_for(row: dict[str, Any]) -> ItemIdentity:
+        reference = row if numbered_files else row["originals"][0]
+        return next(
+            iter(
+                coverage.file_owners[
+                    (reference["path"], int(reference["crc32"], 16), reference["size"])
+                ]
             )
+        )
+
+    for row in rows:
+        if row["association"] == association and row["date_status"] == "known":
+            owner = owner_for(row)
             row["sidecars"] = sorted(coverage.item_paths[owner])
     with ExitStack() as stack:
         media: dict[FileKey, tuple[zipfile.ZipFile, zipfile.ZipInfo]] = {}
@@ -126,17 +151,14 @@ def recover(
         payloads: dict[str, dict[str, Any]] = {}
         for row in rows:
             row["status"] = "unresolved"
-            if row["association"] != "candidate" or row["date_status"] != "known":
-                row["reason"] = "No unambiguous original metadata and capture date"
-                continue
-            original = row["originals"][0]
-            owner = next(
-                iter(
-                    coverage.file_owners[
-                        (original["path"], int(original["crc32"], 16), original["size"])
-                    ]
+            if row["association"] != association or row["date_status"] != "known":
+                row["reason"] = (
+                    "No unambiguous own metadata and capture date"
+                    if numbered_files
+                    else "No unambiguous original metadata and capture date"
                 )
-            )
+                continue
+            owner = owner_for(row)
             captured = next(iter(coverage.capture_times[owner]))
             row["capture_time"] = captured.isoformat()
             if not selection[0] <= captured.date() <= selection[1]:
@@ -215,7 +237,8 @@ def recover(
                     row["albums"] = albums
                     row["album_metadata"] = combined
         counts = Counter(row["status"] for row in rows)
-        print("Numbered-edit recovery (local files only)")
+        label = "Numbered-file" if numbered_files else "Numbered-edit"
+        print(label + " recovery (local files only)")
         print(
             "; ".join(
                 f"{name}: {counts[name]}"
@@ -235,7 +258,8 @@ def recover(
             print("Dry run: no files written, no immich-go invocation or server requests.")
             return 0
         if not planned:
-            print("No recoverable missing numbered edits; no files written.")
+            noun = "files" if numbered_files else "edits"
+            print(f"No recoverable missing numbered {noun}; no files written.")
             return 0
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -305,14 +329,14 @@ def recover(
                             "Generated recovery metadata differs from source: " + "; ".join(issues)
                         )
             # Reserve destinations exclusively; remove our partial output if publishing fails.
-            with manifest.open("x", encoding="utf-8") as stream:
+            with manifest.open("x", encoding="utf-8") as manifest_stream:
                 created = False
                 try:
                     output.mkdir()
                     created = True
                     shutil.copytree(staged, output, dirs_exist_ok=True)
-                    json.dump(report, stream, indent=2, ensure_ascii=True)
-                    stream.write("\n")
+                    json.dump(report, manifest_stream, indent=2, ensure_ascii=True)
+                    manifest_stream.write("\n")
                 except BaseException:
                     manifest.unlink()
                     if created:
