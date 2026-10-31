@@ -285,8 +285,9 @@ class FolderRepairPropertyTests(unittest.TestCase):
         st.text(alphabet='abcABC012 ()~_.é"', min_size=1, max_size=25),
         st.recursive(
             st.none() | st.booleans() | st.integers() | st.text(),
-            lambda child: st.lists(child, max_size=4)
-            | st.dictionaries(st.text(), child, max_size=4),
+            lambda child: (
+                st.lists(child, max_size=4) | st.dictionaries(st.text(), child, max_size=4)
+            ),
             max_leaves=8,
         ),
     )
