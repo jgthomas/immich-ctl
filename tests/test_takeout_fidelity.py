@@ -204,7 +204,7 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn("latitude", expected)
         self.assertTrue(differences(expected, {"dateTaken": "2023-01-01T00:00:00"}))
 
-    def test_gps_precedence_zero_coordinate_and_album_fallback(self):
+    def test_gps_precedence_zero_coordinate_and_separate_album_locations(self):
         data = sidecar("p.jpg") | {
             "geoDataExif": {"latitude": 0, "longitude": 12},
             "geoData": {"latitude": 30, "longitude": 40},
@@ -225,11 +225,23 @@ class MetadataTests(unittest.TestCase):
                 }
             ],
         }
-        self.assertEqual(expectation(data, {"Trip": album})["latitude"], 51)
+        expected = expectation(data, {"Trip": album})
+        self.assertNotIn("latitude", expected)
+        self.assertNotIn("longitude", expected)
+        self.assertEqual(expected["albums"], [{"title": "Trip", "latitude": 51, "longitude": -0.1}])
         other = copy.deepcopy(album)
+        other["title"] = "Other"
         other["enrichments"][0]["locationEnrichment"]["location"][0]["latitudeE7"] = 100000000
-        with self.assertRaisesRegex(ValueError, "Ambiguous album-derived"):
-            expectation(data, {"Trip": album, "Other": other})
+        expected = expectation(data, {"Trip": album, "Other": other})
+        self.assertNotIn("latitude", expected)
+        self.assertNotIn("longitude", expected)
+        self.assertEqual(
+            expected["albums"],
+            [
+                {"title": "Other", "latitude": 10, "longitude": -0.1},
+                {"title": "Trip", "latitude": 51, "longitude": -0.1},
+            ],
+        )
 
     def test_invalid_source_values_and_generated_values_do_not_pass(self):
         for values in (

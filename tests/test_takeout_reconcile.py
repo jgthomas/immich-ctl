@@ -172,6 +172,133 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(rows["Photos from 2023/photo(1).jpg"]["albums"], [])
         self.assertEqual(rows["Photos from 2023/photo-edited(1).jpg"]["albums"], [])
 
+    def album_location_fixture(self, photo_fields=None, *, second_album=False):
+        source = sidecar("photo.jpg") | (photo_fields or {})
+        album = {
+            "title": "Trip",
+            "enrichments": [
+                {
+                    "locationEnrichment": {
+                        "location": [
+                            {"name": "London", "latitudeE7": 515000000, "longitudeE7": -1200000}
+                        ]
+                    }
+                }
+            ],
+        }
+        self.entries = {
+            "Trip/metadata.json": album,
+            "Trip/photo.jpg": b"original",
+            "Trip/photo.jpg.json": source,
+        }
+        albums = [{"title": "Trip", "description": "London", "latitude": 51.5, "longitude": -0.12}]
+        if second_album:
+            self.entries.update(
+                {
+                    "Other/metadata.json": {
+                        "title": "Other",
+                        "enrichments": [
+                            {
+                                "locationEnrichment": {
+                                    "location": [
+                                        {"latitudeE7": 560000000, "longitudeE7": -30000000}
+                                    ]
+                                }
+                            }
+                        ],
+                    },
+                    "Other/photo.jpg": b"original",
+                    "Other/photo.jpg.json": source,
+                }
+            )
+            albums.append({"title": "Other", "latitude": 56.0, "longitude": -3.0})
+        self.write()
+        media = self.local_file(self.extracted, "photo.jpg", b"original")
+        native = Path(str(media) + ".JSON")
+        metadata = json.loads(native.read_text()) | {"albums": albums}
+        native.write_text(json.dumps(metadata))
+        return native, metadata
+
+    def test_album_location_is_preserved_without_inventing_photo_gps(self):
+        for photo_fields in ({}, {"geoData": {"latitude": 0, "longitude": 0}}):
+            with self.subTest(photo_fields=photo_fields):
+                native, _ = self.album_location_fixture(photo_fields)
+                before = native.read_bytes()
+                report = self.report()
+                self.assertTrue(report["metadata_and_albums_validated"])
+                self.assertEqual(report["selected"]["needs_review"], 0)
+                self.assertEqual(native.read_bytes(), before)
+
+    def test_different_album_locations_do_not_imply_conflicting_photo_gps(self):
+        self.album_location_fixture(second_album=True)
+        report = self.report()
+        self.assertTrue(report["metadata_and_albums_validated"])
+        self.assertEqual(report["selected"]["present"], 2)
+
+    def test_lost_or_altered_album_coordinates_still_require_review(self):
+        native, metadata = self.album_location_fixture()
+        for field in ("latitude", "longitude"):
+            for value in (None, 12.0):
+                with self.subTest(field=field, value=value):
+                    changed = json.loads(json.dumps(metadata))
+                    if value is None:
+                        del changed["albums"][0][field]
+                    else:
+                        changed["albums"][0][field] = value
+                    native.write_text(json.dumps(changed))
+                    report = self.report()
+                    self.assertFalse(report["metadata_and_albums_validated"])
+                    self.assertIn(
+                        "album Trip: " + field + " differs from source",
+                        report["files"][0]["issues"],
+                    )
+
+    def test_source_photo_gps_is_checked_independently_of_album_location(self):
+        for source_field in ("geoDataExif", "geoData"):
+            with self.subTest(source_field=source_field):
+                native, metadata = self.album_location_fixture(
+                    {source_field: {"latitude": 55.9, "longitude": -3.2}}
+                )
+                for coordinates in ({}, {"latitude": 51.5, "longitude": -0.12}):
+                    native.write_text(json.dumps(metadata | coordinates))
+                    report = self.report()
+                    self.assertFalse(report["metadata_and_albums_validated"])
+                    for field in ("latitude", "longitude"):
+                        self.assertIn(field + " differs from source", report["files"][0]["issues"])
+                native.write_text(json.dumps(metadata | {"latitude": 55.9, "longitude": -3.2}))
+                self.assertTrue(self.report()["metadata_and_albums_validated"])
+
+    @unittest.skipUnless(shutil.which("immich-go"), "optional installed immich-go integration")
+    def test_real_extraction_preserves_album_location_without_photo_gps(self):
+        self.album_location_fixture()
+        output = self.root / "native-output"
+        before = self.archive.read_bytes()
+        with patch.dict(os.environ, {"IMMICHGO_TEMPDIR": str(self.root / "cache")}):
+            with redirect_stdout(io.StringIO()):
+                code = takeout.main(
+                    [
+                        "extract",
+                        "--date-range",
+                        "2023",
+                        "--output",
+                        str(output),
+                        "--log-file",
+                        str(self.root / "extract.log"),
+                        str(self.archive),
+                    ]
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.archive.read_bytes(), before)
+        media = list(output.rglob("*.jpg"))
+        self.assertEqual(len(media), 1)
+        self.assertEqual(media[0].read_bytes(), b"original")
+        generated = json.loads(Path(str(media[0]) + ".JSON").read_text())
+        self.assertNotIn("latitude", generated)
+        self.assertNotIn("longitude", generated)
+        self.assertEqual(generated["albums"][0]["latitude"], 51.5)
+        self.assertEqual(generated["albums"][0]["longitude"], -0.12)
+        self.assertTrue(self.report(output)["metadata_and_albums_validated"])
+
     def test_unclassified_files_are_reported_without_hiding_later_media(self):
         self.entries = {"000-first.bin": b"unsupported"} | self.entries
         self.write()

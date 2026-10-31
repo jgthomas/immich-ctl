@@ -273,7 +273,9 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   outside-date, excluded, unresolved source content or unmatched to the export.
 - Compares source capture dates, descriptions, GPS, favourite/archive flags and
   exact album associations with generated sidecars, including album descriptions
-  and locations. Handles omitted zero values, GPS fallbacks and identical album copies.
+  and locations. Photo GPS and album locations are checked separately; album
+  locations are not assumed to be photo GPS. Handles omitted zero values,
+  EXIF-to-Google photo GPS fallbacks and identical album copies.
   Unclassified source files are listed separately; other metadata fields are unverified.
 - Album-folder copies count as separate source files; distinct checksum counts are
   also shown. Metadata records without matching media filenames are listed separately.

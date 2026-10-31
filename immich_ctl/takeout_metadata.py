@@ -82,7 +82,12 @@ def album_expectation(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def expectation(data: dict[str, Any], albums: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Validate source types and record the supported, comparable fields."""
+    """Compare photo GPS and album locations at their respective metadata levels.
+
+    The Google reader can infer an asset location from an album internally, but
+    0.32.0 exports the original photo metadata without that inferred location.
+    An album location is not evidence of where each photo was taken.
+    """
     result: dict[str, Any] = {"albums": [album_expectation(a) for _, a in sorted(albums.items())]}
     captured = capture_time(data)
     if captured is None:
@@ -103,16 +108,6 @@ def expectation(data: dict[str, Any], albums: dict[str, dict[str, Any]]) -> dict
         coordinates = (number(geo.get("latitude", 0), 90), number(geo.get("longitude", 0), 180))
         if coordinates != (0, 0):
             break
-    if coordinates == (0, 0):
-        locations = {
-            (a.get("latitude", 0), a.get("longitude", 0))
-            for a in result["albums"]
-            if a.get("latitude", 0) or a.get("longitude", 0)
-        }
-        if len(locations) > 1:
-            raise ValueError("Ambiguous album-derived GPS coordinates")
-        if locations:
-            coordinates = next(iter(locations))
     if coordinates != (0, 0):
         result["latitude"], result["longitude"] = coordinates
     return result
