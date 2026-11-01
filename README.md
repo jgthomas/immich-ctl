@@ -15,92 +15,112 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 
 ## Migration runbook
 
-Start with a year containing few photos. Run these steps from the repository root
-in Bash.
+Run from the repository root in Bash, using all ZIP parts from the same export.
+`--output` creates a new folder; `--extracted` reads an existing folder.
+Add `--dry-run` to extraction, recovery or repair commands to preview local changes.
 
-In the commands below, **`--output` creates a new folder**; **`--extracted` reads an
-existing folder**. The folders stay separate. Later checks read them together to
-account for all the files prepared for upload.
-
-1. **Set the year, paths and account.** Replace the export pattern and account name;
-   include all ZIP parts from the same export.
+1. **Set the year, paths and account.** Keep the album mapping outside upload folders.
 
    ```bash
-   year=2022
+   trial_year=2022
    archives=(~/Downloads/takeout-EXPORT-*.zip)
-   normal_extract="$HOME/Pictures/immich-$year"
+   normal_extract="$HOME/Pictures/immich-$trial_year"
    recovered_edits="${normal_extract}-recovered"
-   reviewed_files="${normal_extract}-reviewed"
+   recovered_numbered="${normal_extract}-recovered-numbered"
+   album_map="$HOME/Pictures/immich-$trial_year-album-names.json"
    config="$HOME/.config/immich-ctl/ACCOUNT.ini"
    ```
 
-2. **Inspect the selection and numbered files.** Add `--details` to investigate findings.
+2. **Query and audit the export.** Check candidate counts, albums and numbered-file patterns.
 
    ```bash
-   ./immich-takeout query --date-range "$year" "${archives[@]}"
+   ./immich-takeout query --date-range "$trial_year" "${archives[@]}"
    ./immich-takeout audit "${archives[@]}"
    ```
 
-3. **Extract from the ZIPs.** Creates `$normal_extract` containing the media and
-   sidecars immich-go can match normally, including many `(n)` files. Keep each
-   media file and its `.JSON` sidecar together.
+3. **Extract the year.** Keep the generated media and JSON sidecars together.
 
    ```bash
-   ./immich-takeout extract --date-range "$year" --output "$normal_extract" "${archives[@]}"
+   ./immich-takeout extract --date-range "$trial_year" \
+     --output "$normal_extract" "${archives[@]}"
    ```
 
-4. **Extract the numbered edits missed by step 3.** Reads the ZIPs and checks
-   `$normal_extract` to avoid recovering files already present. Writes recoverable
-   omissions into `$recovered_edits`, leaving `$normal_extract` unchanged.
+4. **Recover omitted edits and ordinary numbered files separately.** If edit recovery
+   creates no folder, omit its `--extracted` argument from the second command.
 
    ```bash
-   ./immich-takeout recover --date-range "$year" --extracted "$normal_extract" \
+   ./immich-takeout recover --date-range "$trial_year" --extracted "$normal_extract" \
      --output "$recovered_edits" "${archives[@]}"
+   ./immich-takeout recover-numbered --date-range "$trial_year" \
+     --extracted "$normal_extract" --extracted "$recovered_edits" \
+     --output "$recovered_numbered" "${archives[@]}"
    ```
 
-   Add `--dry-run` to preview recovery without creating files.
-
-5. **Check what is still missing or incorrect.** Compares the original ZIPs with
-   the combined contents of the two folders. Both `--extracted` arguments are
-   **inputs**: this command prints a report and creates no media or folders.
+5. **Reconcile all existing folders against Takeout.** Build reusable folder arguments
+   and save the report; inspect missing files and metadata/album findings. Include
+   any additional manually recovered folder in the list below.
 
    ```bash
-   ./immich-takeout reconcile --date-range "$year" \
-     --extracted "$normal_extract" --extracted "$recovered_edits" --details "${archives[@]}"
+   folders=(); inputs=()
+   for folder in "$normal_extract" "$recovered_edits" "$recovered_numbered"; do
+     [[ -d "$folder" ]] || continue
+     folders+=("$folder")
+     inputs+=(--extracted "$folder")
+   done
+   ./immich-takeout reconcile --date-range "$trial_year" "${inputs[@]}" \
+     "${archives[@]}" > "/tmp/immich-$trial_year-reconcile.txt" 2>&1
    ```
 
-   Omit the recovery input if step 4 created no folder. Review missing files,
-   metadata/album differences, conflicts and unexpected media. If manual recovery
-   is needed, put verified files and sidecars in `$reviewed_files`, then repeat
-   this check with `--extracted "$reviewed_files"` added. Record deferred exceptions
-   and keep unresolved files out of upload folders. Unknown-date findings are export-wide.
-
-6. **Repair stored filenames, then check upload risks.** Repair each prepared folder
-   so its JSON `fileName` values match the media filenames. Omit recovery commands
-   and inputs if no recovery folder was created. The audit makes no server changes;
-   review its warnings about retained metadata, replacement and skips before proceeding.
+6. **Resolve findings and repair filenames.** Use [fixes and recovery](#fixes-and-recovery)
+   for duplicate album titles or manual review; record any accepted uncertainties.
 
    ```bash
-   ./immich-repair-filenames "$normal_extract"
-   ./immich-repair-filenames "$recovered_edits"
-   ./immich-takeout audit --config "$config" --date-range "$year" \
-     --extracted "$normal_extract" --extracted "$recovered_edits" "${archives[@]}"
+   for folder in "${folders[@]}"; do
+     ./immich-repair-filenames "$folder" || break
+   done
    ```
 
-7. **Upload and validate each prepared folder.** Repeat these commands with
-   `$recovered_edits` and `$reviewed_files` for folders that exist.
+7. **Repeat reconciliation and audit the prepared upload folders.** Reuse the album
+   mapping if one was created, and inspect both reports before proceeding.
 
    ```bash
-   ./immich-upload-folder "$normal_extract" --config "$config"
-   ./immich-validate-folder "$normal_extract" --config "$config" --details
+   album_args=()
+   if [[ -f "$album_map" ]]; then album_args=(--album-map "$album_map"); fi
+   ./immich-takeout reconcile --date-range "$trial_year" "${inputs[@]}" \
+     "${album_args[@]}" "${archives[@]}" > "/tmp/immich-$trial_year-reconcile.txt" 2>&1
+   ./immich-takeout audit --date-range "$trial_year" --config "$config" \
+     "${inputs[@]}" "${archives[@]}" > "/tmp/immich-$trial_year-upload-audit.txt" 2>&1
    ```
 
-   To preview an upload first, add `--dry-run` to `immich-upload-folder` and inspect
-   its log. A dry run uploads nothing.
+8. **Preview each upload.** Check expected uploads, duplicates, albums and stacking;
+   these previews contact Immich but upload no media.
 
-   Investigate skipped uploads and validation findings. Check dates, GPS, albums and
-   playback. Keep the ZIPs and Google Photos until independent backup and restore
-   testing are complete.
+   ```bash
+   for folder in "${folders[@]}"; do
+     ./immich-upload-folder "$folder" --config "$config" --dry-run || break
+   done
+   ```
+
+9. **Upload each prepared folder.** If a command fails, inspect its log before
+   continuing with the remaining folders; don't blindly retry an upload.
+
+   ```bash
+   for folder in "${folders[@]}"; do
+     ./immich-upload-folder "$folder" --config "$config" || break
+   done
+   ```
+
+10. **Validate and visually review.** Allow server processing to finish, inspect the
+    saved results, and check dates, GPS, albums, stacks, GIFs and video playback.
+
+    ```bash
+    for folder in "${folders[@]}"; do
+      ./immich-validate-folder "$folder" --config "$config" \
+        > "/tmp/${folder##*/}-validation.txt" 2>&1
+    done
+    ```
+
+Keep the ZIPs and Google Photos until independent backup and restore testing are complete.
 
 ## Describe a Takeout export
 
@@ -228,55 +248,6 @@ external-library assets are excluded. Trashed checksum matches are flagged becau
 they may prevent an active upload. Native sidecar omissions are reported as unverified
 when comparing existing metadata; the audit does not infer zero/false source values.
 
-## Recover omitted numbered edits
-
-Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
-
-```bash
-./immich-takeout recover --date-range 2022 --extracted /path/to/extracted-2022 \
-  --output /path/to/recovered-2022 --dry-run ~/Downloads/takeout-EXPORT-*.zip
-```
-
-- Remove `--dry-run` to create a **new**, separate upload-ready folder and a sibling
-  `recovered-2022.manifest.json` recording source paths, associations and checksums.
-- Recovers missing numbered `-edited` variants only when an exact original has
-  unambiguous metadata and a capture date in the selected range. Conflicting
-  metadata stays unresolved. Trashed and partner items are excluded; use
-  `--include-partner` to include partner items.
-- Preserves source album metadata, including narrative/location enrichments.
-  Uses immich-go to generate `.JSON` sidecars, then verifies recovered bytes and
-  supported metadata before publishing. Conflicting albums remain unresolved.
-  Recovery filenames include a checksum prefix to avoid collisions with originals.
-- Matching bytes confirm local file coverage only, not metadata or album coverage.
-  Other missing files and unclear associations still require review.
-- Dry runs write nothing and need no immich-go. Recovery contacts no server and
-  leaves source ZIPs and the existing extraction unchanged. Upload and validate
-  the recovery folder using the commands below.
-
-## Recover omitted numbered files
-
-Run ordinary numbered-file recovery separately from numbered-edit recovery:
-
-```bash
-./immich-takeout recover-numbered --date-range 2022 \
-  --extracted /path/to/extracted-2022 --extracted /path/to/recovered-edits-2022 \
-  --output /path/to/recovered-numbered-2022 --dry-run ~/Downloads/takeout-EXPORT-*.zip
-```
-
-Remove `--dry-run` to recover into a new folder with a companion manifest.
-This handles numbered non-edited media such as `photo(1).jpg` or `date(2).gif`,
-including files whose Takeout JSON title has no extension. Only files with
-unambiguous own metadata and a capture date in the selected range are recovered.
-Trashed and partner items are excluded by default; `--include-partner` includes
-partner items. Missing, ambiguous or conflicting metadata stays unresolved.
-
-Repeat `--extracted` to check byte coverage across all existing folders. Media
-bytes and available metadata are preserved using the same verified extraction
-and publication safeguards as edit recovery. Dry runs write nothing and do not
-invoke immich-go. Recovery contacts no server. Include this additional folder in
-subsequent reconciliation, filename repair, upload-risk audits and validation;
-reapply any album-name mapping repairs before uploading.
-
 ## Reconcile Takeout files with extracted folders
 
 ```bash
@@ -313,7 +284,63 @@ reapply any album-name mapping repairs before uploading.
   operational errors return `1`. These are local extraction checks; use the validator
   below to check Immich after upload.
 
-## Repair extracted filenames
+## Fixes and recovery
+
+Apply only the fixes needed by your reports. Keep the original ZIPs unchanged;
+reconcile repaired files and repeat the upload-risk audit before uploading.
+Generated `.JSON` sidecars are read by immich-go; Immich web/mobile uploads do
+not interpret them.
+
+### Recover omitted numbered edits
+
+Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
+
+```bash
+./immich-takeout recover --date-range 2022 --extracted /path/to/extracted-2022 \
+  --output /path/to/recovered-2022 --dry-run ~/Downloads/takeout-EXPORT-*.zip
+```
+
+- Remove `--dry-run` to create a **new**, separate upload-ready folder and a sibling
+  `recovered-2022.manifest.json` recording source paths, associations and checksums.
+- Recovers missing numbered `-edited` variants only when an exact original has
+  unambiguous metadata and a capture date in the selected range. Conflicting
+  metadata stays unresolved. Trashed and partner items are excluded; use
+  `--include-partner` to include partner items.
+- Preserves source album metadata, including narrative/location enrichments.
+  Uses immich-go to generate `.JSON` sidecars, then verifies recovered bytes and
+  supported metadata before publishing. Conflicting albums remain unresolved.
+  Recovery filenames include a checksum prefix to avoid collisions with originals.
+- Matching bytes confirm local file coverage only, not metadata or album coverage.
+  Other missing files and unclear associations still require review.
+- Dry runs write nothing and need no immich-go. Recovery contacts no server and
+  leaves source ZIPs and the existing extraction unchanged. Upload and validate
+  the recovery folder using the commands below.
+
+### Recover omitted numbered files
+
+Run ordinary numbered-file recovery separately from numbered-edit recovery:
+
+```bash
+./immich-takeout recover-numbered --date-range 2022 \
+  --extracted /path/to/extracted-2022 --extracted /path/to/recovered-edits-2022 \
+  --output /path/to/recovered-numbered-2022 --dry-run ~/Downloads/takeout-EXPORT-*.zip
+```
+
+Remove `--dry-run` to recover into a new folder with a companion manifest.
+This handles numbered non-edited media such as `photo(1).jpg` or `date(2).gif`,
+including files whose Takeout JSON title has no extension. Only files with
+unambiguous own metadata and a capture date in the selected range are recovered.
+Trashed and partner items are excluded by default; `--include-partner` includes
+partner items. Missing, ambiguous or conflicting metadata stays unresolved.
+
+Repeat `--extracted` to check byte coverage across all existing folders. Media
+bytes and available metadata are preserved using the same verified extraction
+and publication safeguards as edit recovery. Dry runs write nothing and do not
+invoke immich-go. Recovery contacts no server. Include this additional folder in
+subsequent reconciliation, filename repair, upload-risk audits and validation;
+reapply any album-name mapping repairs before uploading.
+
+### Repair extracted filenames
 
 Align each native JSON sidecar's `fileName` with its actual media filename:
 
@@ -335,7 +362,7 @@ This removes stored-name aliases, not duplicate images. Matching basenames in ot
 folders or on the server can still collide: rerun reconciliation and the upload-risk
 audit after repair. It does not repair metadata already uploaded to Immich.
 
-## Separate duplicate album names
+### Separate duplicate album names
 
 Append each source album's UTC date to duplicate titles in extracted JSON:
 
@@ -364,6 +391,39 @@ Keep the mapping outside upload folders and reuse it when reconciling:
 The mapping is checked against the original source directories and album dates.
 This script makes no server requests and does not rename existing Immich albums.
 Reapply it after re-extraction or additional recovery, then audit prepared folders.
+
+### Review ambiguous metadata and album associations
+
+A file can match the source bytes while its metadata association remains uncertain.
+For example, one extensionless Takeout JSON title can match a JPG and a GIF;
+immich-go creates separate sidecars using the same timestamp. Accept that timestamp
+only after review. Filename repair gives the files distinct upload names but does
+not establish which source metadata belongs to each file.
+
+Album checks use exact-byte source copies. Edited versions can inherit their
+original's albums even when Takeout does not repeat the edit in every album folder.
+A reported extra membership is therefore not proof it is wrong: check Google
+Photos or explicitly accept the difference before removing memberships.
+
+Photo GPS and album locations are separate. An album location does not establish
+where every photo was taken, and album-only coordinates need no photo-GPS repair.
+Keep genuinely unresolved files out of upload folders unless their uncertainty is
+explicitly accepted; record the paths and decision for later validation.
+
+### Review upload behaviour and logs
+
+- Byte-identical copies may be skipped; compare distinct checksums rather than
+  expecting one server asset per local file.
+- immich-go 0.32.0 can stack same-stem, same-time images of different formats despite
+  the burst/RAW/HEIC `NoStack` settings. Assets remain separate; use **Unstack** in
+  Immich's web interface if the grouping is unwanted.
+- The wrappers disable job pausing, but 0.32.0 still attempts to resume server jobs.
+  This can log a thumbnail-job **403** after successful uploads. The wrapper returns
+  a failure for logged errors: inspect the actual entry and validate uploaded files
+  before retrying. Asset, metadata, album and stack failures still require attention.
+- Native sidecars can omit empty descriptions, zero coordinates and false flags.
+  The server validator reports those values as unverified rather than assuming
+  they were preserved; compare with original Takeout metadata when needed.
 
 ## Upload an extracted folder
 
