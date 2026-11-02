@@ -14,7 +14,7 @@ dependencies = []
 dev = [
     "hypothesis>=6.170.5",
     "mypy>=2.4.0",
-    "ruff==0.17.2",
+    "ruff==0.17.3",
 ]
 mutation = [
     "mutmut>=3.8.0",
