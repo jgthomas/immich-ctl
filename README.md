@@ -340,6 +340,26 @@ invoke immich-go. Recovery contacts no server. Include this additional folder in
 subsequent reconciliation, filename repair, upload-risk audits and validation;
 reapply any album-name mapping repairs before uploading.
 
+### Extract individual files for manual review
+
+Copy explicitly named files into a new directory, preserving their paths beneath
+Google Photos. Repeat `--member` to select more files, including source JSON if
+wanted. Paths are exact and case-sensitive; no wildcard expansion or automatic
+sidecar selection is performed.
+
+```bash
+./immich-extract-manual "$archive" \
+  --member 'Photos from 2021/lp_image(1).MP4' \
+  --output "$HOME/Pictures/immich-trial-2021-manual" --dry-run
+```
+
+Remove `--dry-run` to extract. Existing output directories are refused. Extraction
+checks ZIP integrity and reports SHA-256 checksums; a failed copy removes the new
+output directory. Dry runs only check selections. Source archives are unchanged.
+This does not generate upload metadata or infer capture dates, Live Photo links
+or albums. Review the extracted files and prepare any required metadata before
+including them in upload audits and uploads.
+
 ### Repair extracted filenames
 
 Align each native JSON sidecar's `fileName` with its actual media filename:

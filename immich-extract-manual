@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Extract explicitly selected Takeout files for manual review."""
+
+import sys
+
+from immich_ctl.manual_extract import main
+
+if __name__ == "__main__":
+    sys.exit(main())
