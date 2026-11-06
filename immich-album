@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Create or select an owned Immich album and add exact asset IDs."""
+
+import sys
+
+from immich_ctl.album import main
+
+if __name__ == "__main__":
+    sys.exit(main())

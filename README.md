@@ -285,6 +285,37 @@ when comparing existing metadata; the audit does not infer zero/false source val
   operational errors return `1`. These are local extraction checks; use the validator
   below to check Immich after upload.
 
+## Create an album and add existing photos
+
+Use exact asset UUIDs, as positional arguments or a whitespace-separated text file:
+
+```bash
+./immich-album --name "Repair review" --config "$config" \
+  --ids-file /path/to/asset-ids.txt --dry-run
+./immich-album --name "Repair review" --config "$config" \
+  ASSET_UUID_1 ASSET_UUID_2
+./immich-album --album-id ALBUM_UUID --config "$config" \
+  --ids-file /path/to/more-ids.txt
+```
+
+A name creates an album or reuses a single owned album with that exact name.
+Duplicate names require `--album-id`. No IDs creates an empty album. Repeat
+`--ids-file` to combine files; repeated IDs are deduplicated. IDs must be UUID v4.
+All selected assets must be owned by the configured account and outside trash;
+preflight checks every ID before any writes. A dry run performs only reads.
+
+Requires `user.read`, `asset.read`, `album.read`, `album.create` (for new albums)
+and `albumAsset.create` (for additions). The server also checks access to share
+individual assets. Existing memberships are accepted on repeat runs. Photos remain
+in their original timeline/albums; the command never moves or deletes assets.
+
+Additions run in batches of 100. A partial failure stops further batches and returns
+nonzero, listing failed and unattempted IDs. Requests are not automatically retried.
+The album ID is printed before additions; after an interruption or uncertain network
+outcome, inspect the album and rerun with `--album-id`. An already-created album is
+left intact if adding assets fails. Concurrent album creation can still produce
+identical titles; avoid running two creators for the same name simultaneously.
+
 ## Fixes and recovery
 
 Apply only the fixes needed by your reports. Keep the original ZIPs unchanged;

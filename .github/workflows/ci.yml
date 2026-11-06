@@ -62,6 +62,7 @@ jobs:
           uv run --locked immich-repair-album-names --help
           uv run --locked immich-extract-manual --help
           uv run --locked immich-repair-filetypes --help
+          uv run --locked immich-album --help
 
   immich-go-integration:
     name: immich-go 0.32.0 integrations
