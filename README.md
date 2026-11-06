@@ -10,6 +10,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - For validation: an API key with `user.read`, `asset.read` and `album.read` permissions.
 - For server upload-risk audits: `user.read` and `asset.read`; also `album.read`
   when the input has album memberships.
+- For creating albums or adding existing assets: see [album permissions](#create-an-album-and-add-existing-photos).
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
 - For development: [uv](https://docs.astral.sh/uv/).
 
@@ -18,6 +19,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 Run from the repository root in Bash, using all ZIP parts from the same export.
 `--output` creates a new folder; `--extracted` reads an existing folder.
 Add `--dry-run` to extraction, recovery or repair commands to preview local changes.
+Work on one account at a time; all server commands must use that account's INI.
 
 1. **Set the year, paths and account.** Keep the album mapping outside upload folders.
 
@@ -27,6 +29,7 @@ Add `--dry-run` to extraction, recovery or repair commands to preview local chan
    normal_extract="$HOME/Pictures/immich-$trial_year"
    recovered_edits="${normal_extract}-recovered"
    recovered_numbered="${normal_extract}-recovered-numbered"
+   manual_extract="${normal_extract}-manual"
    album_map="$HOME/Pictures/immich-$trial_year-album-names.json"
    config="$HOME/.config/immich-ctl/ACCOUNT.ini"
    ```
@@ -45,24 +48,28 @@ Add `--dry-run` to extraction, recovery or repair commands to preview local chan
      --output "$normal_extract" "${archives[@]}"
    ```
 
-4. **Recover omitted edits and ordinary numbered files separately.** If edit recovery
-   creates no folder, omit its `--extracted` argument from the second command.
+4. **Recover omitted edits and ordinary numbered files separately.** Preview with
+   `--dry-run` if needed. A `recover: 0` result needs no extraction; unresolved files
+   with unknown dates can belong to other years.
 
    ```bash
    ./immich-takeout recover --date-range "$trial_year" --extracted "$normal_extract" \
      --output "$recovered_edits" "${archives[@]}"
+   recovery_inputs=(--extracted "$normal_extract")
+   if [[ -d "$recovered_edits" ]]; then recovery_inputs+=(--extracted "$recovered_edits"); fi
    ./immich-takeout recover-numbered --date-range "$trial_year" \
-     --extracted "$normal_extract" --extracted "$recovered_edits" \
+     "${recovery_inputs[@]}" \
      --output "$recovered_numbered" "${archives[@]}"
    ```
 
 5. **Reconcile all existing folders against Takeout.** Build reusable folder arguments
    and save the report; inspect missing files and metadata/album findings. Include
-   any additional manually recovered folder in the list below.
+   any manually recovered files in `$manual_extract`; rebuild these arguments if
+   you add a folder later.
 
    ```bash
    folders=(); inputs=()
-   for folder in "$normal_extract" "$recovered_edits" "$recovered_numbered"; do
+   for folder in "$normal_extract" "$recovered_edits" "$recovered_numbered" "$manual_extract"; do
      [[ -d "$folder" ]] || continue
      folders+=("$folder")
      inputs+=(--extracted "$folder")
@@ -72,7 +79,8 @@ Add `--dry-run` to extraction, recovery or repair commands to preview local chan
    ```
 
 6. **Resolve findings and repair file types and filenames.** Use [fixes and recovery](#fixes-and-recovery)
-   for duplicate album titles or manual review; record any accepted uncertainties.
+   for album names and manual recovery; record accepted uncertainties. These repairs
+   change the local extraction, preserving media bytes.
 
    ```bash
    for folder in "${folders[@]}"; do
@@ -82,7 +90,8 @@ Add `--dry-run` to extraction, recovery or repair commands to preview local chan
    ```
 
 7. **Repeat reconciliation and audit the prepared upload folders.** Reuse the album
-   mapping if one was created, and inspect both reports before proceeding.
+   mapping if one was created. Resolve or explicitly accept findings in both reports
+   before proceeding; the uploader does not enforce audit results.
 
    ```bash
    album_args=()
@@ -111,8 +120,9 @@ Add `--dry-run` to extraction, recovery or repair commands to preview local chan
    done
    ```
 
-10. **Validate and visually review.** Allow server processing to finish, inspect the
-    saved results, and check dates, GPS, albums, stacks, GIFs and video playback.
+10. **Validate and visually review.** Allow server processing to finish and inspect
+    the saved results. Check dates, GPS, albums, image orientation, stacks, GIFs and
+    video playback; a checksum match alone does not verify their presentation.
 
     ```bash
     for folder in "${folders[@]}"; do
@@ -174,7 +184,8 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
 ```
 
 - Remove `--dry-run` to upload. Extraction is optional; uploads read ZIPs directly.
-  Source ZIPs are never modified.
+  Source ZIPs are never modified. Use the extracted-folder runbook when local
+  filename, file-type or album-name repairs are needed; direct ZIP uploads bypass them.
 - Extraction creates year/month folders and `.JSON` metadata compatible with
   `immich-go upload from-folder`.
 - Extraction and direct ZIP uploads reject matching basenames/sizes with different
@@ -189,7 +200,9 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
 - Extraction dry runs only report the plan; upload dry runs contact the server.
 - Archived items are included; trashed/unmatched items are excluded. Add
   `--include-partner` to include partner-shared media.
-- Uploads sync albums, disable overwrite and leave server jobs running.
+- Uploads sync albums, set `--overwrite=false` and leave server jobs running.
+  This flag does **not** disable immich-go's filename/time replacement heuristic;
+  review the upload-risk audit before uploading.
 - Logs go to `./logs/`; use `--log-file FILE` for a new custom path.
   Recorded errors cause a failing exit status even if immich-go returns success;
   partial output is retained for investigation.
@@ -321,7 +334,7 @@ identical titles; avoid running two creators for the same name simultaneously.
 Apply only the fixes needed by your reports. Keep the original ZIPs unchanged;
 reconcile repaired files and repeat the upload-risk audit before uploading.
 Generated `.JSON` sidecars are read by immich-go; Immich web/mobile uploads do
-not interpret them.
+not interpret them. Keep manifests and mappings outside upload folders.
 
 ### Recover omitted numbered edits
 
@@ -344,6 +357,9 @@ Compare numbered edits in the ZIPs against an existing extraction by SHA-256:
   Recovery filenames include a checksum prefix to avoid collisions with originals.
 - Matching bytes confirm local file coverage only, not metadata or album coverage.
   Other missing files and unclear associations still require review.
+- If nothing needs recovery, no output folder is created. Unresolved items with
+  unknown dates remain visible across yearly runs; their folder names do not
+  establish capture dates.
 - Dry runs write nothing and need no immich-go. Recovery contacts no server and
   leaves source ZIPs and the existing extraction unchanged. Upload and validate
   the recovery folder using the commands below.
@@ -368,8 +384,9 @@ partner items. Missing, ambiguous or conflicting metadata stays unresolved.
 Repeat `--extracted` to check byte coverage across all existing folders. Media
 bytes and available metadata are preserved using the same verified extraction
 and publication safeguards as edit recovery. Dry runs write nothing and do not
-invoke immich-go. Recovery contacts no server. Include this additional folder in
-subsequent reconciliation, filename repair, upload-risk audits and validation;
+invoke immich-go. Recovery contacts no server. Omit `--extracted` arguments for
+folders that do not exist. Include newly recovered folders in subsequent
+reconciliation, file-type/filename repair, upload-risk audits and validation;
 reapply any album-name mapping repairs before uploading.
 
 ### Extract individual files for manual review
@@ -380,17 +397,25 @@ wanted. Paths are exact and case-sensitive; no wildcard expansion or automatic
 sidecar selection is performed.
 
 ```bash
-./immich-extract-manual "$archive" \
-  --member 'Photos from 2021/lp_image(1).MP4' \
-  --output "$HOME/Pictures/immich-trial-2021-manual" --dry-run
+./immich-extract-manual /path/to/takeout.zip \
+  --member 'Photos from 2022/example.MP4' \
+  --output "$manual_extract" --dry-run
 ```
 
 Remove `--dry-run` to extract. Existing output directories are refused. Extraction
 checks ZIP integrity and reports SHA-256 checksums; a failed copy removes the new
 output directory. Dry runs only check selections. Source archives are unchanged.
 This does not generate upload metadata or infer capture dates, Live Photo links
-or albums. Review the extracted files and prepare any required metadata before
-including them in upload audits and uploads.
+or albums. For split exports, select the ZIP containing the member. Review the
+files and establish metadata from their own embedded data, source JSON or reviewed
+evidence; a nearby filename or a still-image companion alone is not proof.
+
+Folder uploads require an immich-go native `.JSON` sidecar beside each media file.
+Raw Takeout JSON is a different format. For manual files, prepare only supported,
+verified fields and include the required `software` version marker; do not invent
+dates or GPS to obtain a clean report. Include the manual folder in reconciliation,
+repairs, upload-risk audits, uploads and validation. Uncertain source associations
+may remain findings even after a reviewed manual recovery.
 
 ### Repair misleading image extensions
 
@@ -418,8 +443,10 @@ new manifest path to finish remaining repairs. Completed pairs are idempotent.
 Keep manifests outside upload folders and retain them for review.
 
 Run filename-alias repair afterward, then repeat reconciliation and upload-risk
-audits. Folder checks flag remaining JPEG/PNG signature mismatches. This command
-makes no server requests and does not fix already uploaded assets; uploading the
+audits. Folder upload preflight, server validation and audits with `--extracted`
+flag remaining JPEG/PNG signature mismatches; Takeout reconciliation does not
+check file signatures. This command makes no server requests and does not fix
+already uploaded assets; uploading the
 same bytes again normally hits checksum deduplication.
 
 ### Repair extracted filenames
@@ -496,6 +523,13 @@ explicitly accepted; record the paths and decision for later validation.
 
 - Byte-identical copies may be skipped; compare distinct checksums rather than
   expecting one server asset per local file.
+- Existing checksum matches retain their current capture date, description, GPS
+  and favourite/archive state; rerunning an upload is not a metadata repair.
+  Validate those assets separately, especially after an interrupted upload.
+- Different bytes with the same upload filename and a capture time within roughly
+  five seconds can trigger replacement or skipping, including against trash.
+  Filename repair removes aliases but does not eliminate every collision; review
+  the prepared-folder audit before uploading. Larger files do not prove higher quality.
 - immich-go 0.32.0 can stack same-stem, same-time images of different formats despite
   the burst/RAW/HEIC `NoStack` settings. Assets remain separate; use **Unstack** in
   Immich's web interface if the grouping is unwanted.
@@ -571,7 +605,7 @@ install -m 600 account.example.ini ~/.config/immich-ctl/ACCOUNT.ini
 ```
 
 Replace `ACCOUNT` with a name for the account. Edit the file with your HTTPS
-PixelUnion URL and API key, then run:
+Immich URL and API key, then run:
 
 ```bash
 ./immich-ping --config ~/.config/immich-ctl/ACCOUNT.ini
