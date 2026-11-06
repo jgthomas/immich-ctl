@@ -16,6 +16,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from immich_ctl.config import ConfigError, load_config
+from immich_ctl.image_format import corrected_suffix
 from immich_ctl.takeout import media_type
 
 JSON_LIMIT = 8 * 1024 * 1024
@@ -273,7 +274,9 @@ def compare(
     return differences, unchecked, checked
 
 
-def inspect_folder(folder: Path) -> tuple[list[tuple[Path, dict[str, Any] | None]], list[str]]:
+def inspect_folder(
+    folder: Path, *, check_filetypes: bool = True
+) -> tuple[list[tuple[Path, dict[str, Any] | None]], list[str]]:
     if not folder.is_dir():
         raise ValidationError("Validation requires an existing extracted folder.")
     media: list[tuple[Path, dict[str, Any] | None]] = []
@@ -311,6 +314,10 @@ def inspect_folder(folder: Path) -> tuple[list[tuple[Path, dict[str, Any] | None
         if media_type(path.name) == "Other":
             warnings.append(f"unsupported file: {path.relative_to(folder)}")
             continue
+        if check_filetypes and (format_suffix := corrected_suffix(path)) is not None:
+            warnings.append(
+                f"image format mismatch: {path.relative_to(folder)}; use {format_suffix}"
+            )
         sidecars = by_name[path.parent, path.name]
         metadata = None
         if len(sidecars) != 1 or sidecars[0].is_symlink():

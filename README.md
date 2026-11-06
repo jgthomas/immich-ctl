@@ -71,11 +71,12 @@ Add `--dry-run` to extraction, recovery or repair commands to preview local chan
      "${archives[@]}" > "/tmp/immich-$trial_year-reconcile.txt" 2>&1
    ```
 
-6. **Resolve findings and repair filenames.** Use [fixes and recovery](#fixes-and-recovery)
+6. **Resolve findings and repair file types and filenames.** Use [fixes and recovery](#fixes-and-recovery)
    for duplicate album titles or manual review; record any accepted uncertainties.
 
    ```bash
    for folder in "${folders[@]}"; do
+     ./immich-repair-filetypes "$folder" --manifest "${folder}-filetypes.json" || break
      ./immich-repair-filenames "$folder" || break
    done
    ```
@@ -359,6 +360,36 @@ output directory. Dry runs only check selections. Source archives are unchanged.
 This does not generate upload metadata or infer capture dates, Live Photo links
 or albums. Review the extracted files and prepare any required metadata before
 including them in upload audits and uploads.
+
+### Repair misleading image extensions
+
+Some Takeout files contain JPEG data despite `.HEIC` or `.PNG` names. In Immich,
+JPEGs named `.HEIC` can lose orientation metadata and appear stretched in the web
+viewer. Correct known JPEG/PNG extensions before the first upload:
+
+```bash
+./immich-repair-filetypes "$normal_extract" \
+  --manifest "${normal_extract}-filetypes.json" --dry-run
+```
+
+Remove `--dry-run` to apply. The script checks file signatures, renames each media
+file and its native JSON sidecar, and changes only JSON `fileName`. Image bytes,
+embedded orientation and other JSON fields remain unchanged. JPEG extensions
+`.jpg`, `.jpeg` and `.jpe` are accepted; PNG uses `.png`. Other content is left
+alone: this is a signature check, not full image decoding or validation.
+
+Missing/invalid sidecars, unsafe paths and destination collisions (including case
+variants) stop planning before any writes. The manifest must be outside the upload
+folder. It records old/new paths and checksums before renaming and is marked
+`complete` afterward. A failure rolls back the current file pair; earlier pairs
+may already be complete. A manifest left `planned` needs inspection; rerun with a
+new manifest path to finish remaining repairs. Completed pairs are idempotent.
+Keep manifests outside upload folders and retain them for review.
+
+Run filename-alias repair afterward, then repeat reconciliation and upload-risk
+audits. Folder checks flag remaining JPEG/PNG signature mismatches. This command
+makes no server requests and does not fix already uploaded assets; uploading the
+same bytes again normally hits checksum deduplication.
 
 ### Repair extracted filenames
 
