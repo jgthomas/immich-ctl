@@ -141,6 +141,61 @@ class FolderUploadTests(unittest.TestCase):
                 invoke(*arguments)
             self.assertEqual(error.exception.code, 2)
 
+    def test_album_checksum_duplicates_stop_upload_and_preview_before_creating_logs(self):
+        duplicate = self.folder / "different-name.jpg"
+        duplicate.write_bytes(self.media.read_bytes())
+        original_sidecar = json.loads(self.media.with_name(self.media.name + ".JSON").read_text())
+        for albums in ([{"title": "Trip"}], [{"title": "Other"}], []):
+            for dry_run in (False, True):
+                with self.subTest(albums=albums, dry_run=dry_run):
+                    duplicate.with_name(duplicate.name + ".JSON").write_text(
+                        json.dumps(
+                            {**original_sidecar, "fileName": duplicate.name, "albums": albums}
+                        )
+                    )
+                    before = snapshot(self.folder)
+                    with (
+                        patch.object(folder_upload.shutil, "which", return_value="immich-go"),
+                        patch.object(folder_upload, "run_upload") as run,
+                    ):
+                        code, _, error = invoke(
+                            *self.arguments(*(["--dry-run"] if dry_run else []))
+                        )
+                    self.assertEqual(code, 1)
+                    self.assertIn("empty asset ID", error)
+                    self.assertIn("different-name.jpg", error)
+                    self.assertIn("photo.jpg", error)
+                    run.assert_not_called()
+                    self.assertFalse(self.log.exists())
+                    self.assertEqual(before, snapshot(self.folder))
+
+    def test_zero_exit_with_album_request_failure_is_not_reported_as_success(self):
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+
+                def run(*args, **kwargs):
+                    self.log.write_text(
+                        json.dumps(
+                            {
+                                "level": "ERROR",
+                                "msg": "failed to create album",
+                                "album": "Trip",
+                                "err": "400 Bad Request: Invalid UUID in assetIds",
+                            }
+                        )
+                        + "\n"
+                    )
+                    return subprocess.CompletedProcess([], 0)
+
+                with (
+                    patch.object(folder_upload.shutil, "which", return_value="immich-go"),
+                    patch.object(folder_upload, "run_upload", side_effect=run),
+                ):
+                    code, _, error = invoke(*self.arguments(*(["--dry-run"] if dry_run else [])))
+                self.assertEqual(code, 1)
+                self.assertIn("recorded errors", error)
+                self.log.unlink()
+
     def test_direct_defaults_support_nested_log_paths_and_select_the_right_tool(self):
         log = self.root / "reports/nested/upload.log"
         with (

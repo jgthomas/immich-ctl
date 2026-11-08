@@ -1,11 +1,40 @@
 """Conservative compatibility checks for immich-go 0.32.0's folder reader."""
 
+import hashlib
 import json
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 JSON_LIMIT = 8 * 1024 * 1024
+
+
+def album_duplicate_groups(
+    media: list[Path], metadata: dict[Path, dict[str, Any]]
+) -> list[list[Path]]:
+    """Find local checksum duplicates that can queue empty album IDs in 0.32.0.
+
+    Equal sizes only select candidates; file contents establish duplication.
+    Even matching album lists are unsafe in the upstream AlreadyProcessed path.
+    """
+    sizes: defaultdict[int, list[Path]] = defaultdict(list)
+    for path in media:
+        sizes[path.stat().st_size].append(path)
+    duplicates: list[list[Path]] = []
+    for candidates in sizes.values():
+        if len(candidates) < 2 or not any(metadata[p].get("albums") for p in candidates):
+            continue
+        checksums: defaultdict[str, list[Path]] = defaultdict(list)
+        for path in candidates:
+            with path.open("rb") as stream:
+                checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+            checksums[checksum].append(path)
+        duplicates.extend(
+            sorted(copies)
+            for copies in checksums.values()
+            if len(copies) > 1 and any(metadata[p].get("albums") for p in copies)
+        )
+    return sorted(duplicates)
 
 
 def native_sidecar_issues(

@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from immich_ctl.config import ConfigError, load_config
-from immich_ctl.folder_compat import sidecar_state
+from immich_ctl.folder_compat import album_duplicate_groups, sidecar_state
 from immich_ctl.folder_validate import ValidationError, inspect_folder
 from immich_ctl.takeout_safety import log_has_errors
 from immich_ctl.upload_output import run_upload
@@ -44,12 +44,22 @@ def upload_folder(
         raise FolderUploadError(str(error)) from error
     issues = list(warnings)
     sidecars: dict[Path, dict[str, list[Path]]] = {}
+    metadata: dict[Path, dict] = {}
     for path, _ in media:
-        state = sidecar_state(path, sidecars)
+        state = sidecar_state(path, sidecars, metadata)
         if state != "present_unverified":
             issues.append(str(path.relative_to(folder)) + ": " + state)
     if issues:
         raise FolderUploadError("Upload folder needs review: " + json.dumps(issues))
+    duplicates = album_duplicate_groups([path for path, _ in media], metadata)
+    if duplicates:
+        raise FolderUploadError(
+            "Identical local files carry album memberships: immich-go 0.32.0 can submit "
+            "an empty asset ID for a skipped copy and fail an entire album request. "
+            "Prepare one upload copy per checksum with the combined album memberships; "
+            "matching album lists on every copy are insufficient. Nothing started. Groups: "
+            + json.dumps([[str(p.relative_to(folder)) for p in group] for group in duplicates])
+        )
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("x", encoding="utf-8"):
         log_file.chmod(0o600)

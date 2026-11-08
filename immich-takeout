@@ -10,11 +10,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from immich_ctl.collision_cache import default_directory
 from immich_ctl.config import ConfigError, load_config
 from immich_ctl.folder_validate import Client, ValidationError
 from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
@@ -122,6 +124,23 @@ def log_path(action: str, path: Path | None) -> Path:
     return path.expanduser().resolve()
 
 
+def check_archive_collisions(args: argparse.Namespace, paths: list[Path]) -> None:
+    started = time.perf_counter()
+    directory = None if getattr(args, "no_cache", False) else default_directory()
+    if directory is not None and getattr(args, "output", None) is not None:
+        if directory.resolve().is_relative_to(args.output.expanduser().resolve()):
+            raise TakeoutError("The collision cache must be outside the extraction output.")
+    cached = check_collisions(
+        paths, cache_dir=directory, refresh=getattr(args, "refresh_cache", False)
+    )
+    if getattr(args, "timings", False):
+        print(
+            f"Collision check: {time.perf_counter() - started:.3f}s "
+            f"({'cached' if cached else 'fresh'})",
+            file=sys.stderr,
+        )
+
+
 def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
     binary = shutil.which("immich-go")
     if binary is None:
@@ -138,7 +157,7 @@ def run_immich_go(args: argparse.Namespace, paths: list[Path]) -> int:
         if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
             raise TakeoutError("Extraction requires a new or empty --output directory.")
 
-    check_collisions(paths)
+    check_archive_collisions(args, paths)
 
     log = log_path(args.action, args.log_file)
     if log in paths or (args.action == "upload" and log == args.config.expanduser().resolve()):
@@ -221,6 +240,19 @@ def main(argv: list[str] | None = None) -> int:
     ):
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("archives", nargs="+", type=Path, metavar="ZIP")
+        if name in {"extract", "upload"}:
+            caching = sub.add_mutually_exclusive_group()
+            caching.add_argument(
+                "--no-cache",
+                action="store_true",
+                help="Check collisions without reading/writing cache",
+            )
+            caching.add_argument(
+                "--refresh-cache", action="store_true", help="Recheck collisions and refresh cache"
+            )
+            sub.add_argument(
+                "--timings", action="store_true", help="Print phase durations to stderr"
+            )
         if name == "audit":
             sub.add_argument(
                 "--details", action="store_true", help="List numbered files and candidate sidecars"
@@ -382,11 +414,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.action == "query" or (args.action == "extract" and args.dry_run):
             if args.action == "extract":
-                check_collisions(paths)
+                check_archive_collisions(args, paths)
+            started = time.perf_counter()
             query(paths, args.date_range, getattr(args, "list_items", False))
+            if getattr(args, "timings", False):
+                print(f"Metadata query: {time.perf_counter() - started:.3f}s", file=sys.stderr)
             if args.action == "extract":
                 print(
-                    f"\nDry run: no files written. Planned output: {json.dumps(str(args.output))}"
+                    "\nDry run: no files written to extraction output. "
+                    f"Planned output: {json.dumps(str(args.output))}"
                 )
                 print("Partner-shared media: " + ("include" if args.include_partner else "exclude"))
                 print(

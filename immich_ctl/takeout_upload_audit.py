@@ -347,8 +347,16 @@ def server_report(inputs: list[dict[str, Any]], client: Client) -> dict[str, Any
         input_checksums[row["sha1"]].append(row)
     metadata_conflicts = []
     album_conflicts = []
+    album_duplicates = []
     for checksum, copies in sorted(input_checksums.items()):
         album_sets = {tuple(row["albums"]) for row in copies}
+        if len(copies) > 1 and any(row["albums"] for row in copies):
+            album_duplicates.append(
+                {
+                    "sha1": checksum,
+                    "copies": [{"path": row["path"], "albums": row["albums"]} for row in copies],
+                }
+            )
         if len(album_sets) > 1:
             album_conflicts.append(
                 {
@@ -389,6 +397,7 @@ def server_report(inputs: list[dict[str, Any]], client: Client) -> dict[str, Any
         "unresolved_inputs": unresolved,
         "input_metadata_conflicts": metadata_conflicts,
         "input_album_conflicts": album_conflicts,
+        "input_album_duplicates": album_duplicates,
         "destination_album_title_collisions": destination_collisions,
         "summary": {
             "existing_checksum_files": len({r["path"] for r in existing}),
@@ -409,6 +418,7 @@ def server_report(inputs: list[dict[str, Any]], client: Client) -> dict[str, Any
             "unresolved_inputs": len(unresolved),
             "input_metadata_conflicts": len(metadata_conflicts),
             "input_album_conflicts": len(album_conflicts),
+            "input_album_duplicates": len(album_duplicates),
             "destination_album_title_collisions": len(destination_collisions),
         },
     }
@@ -429,6 +439,11 @@ def upload_audit(
         else archive_inputs(paths, selection, include_partner)
     )
     report = server_report(inputs, client)
+    # Archive candidates are regrouped by the Google Photos reader, so this
+    # specific folder-reader hazard must only be asserted for prepared folders.
+    if not folders:
+        report["input_album_duplicates"] = []
+        report["summary"]["input_album_duplicates"] = 0
     source_collisions = duplicate_album_titles(inspect_archives(paths)[2]) if paths else []
     relevant_titles = {title for row in inputs for title in row["albums"]}
     source_collisions = [c for c in source_collisions if c["title"] in relevant_titles]
@@ -448,6 +463,7 @@ def upload_audit(
             or report["within_input_matches"]
             or report["input_metadata_conflicts"]
             or report["input_album_conflicts"]
+            or report["input_album_duplicates"]
             or report["source_album_title_collisions"]
             or report["destination_album_title_collisions"]
             or any(r["differences"] or r["unchecked"] for r in report["existing_checksum"])
@@ -489,6 +505,7 @@ def print_server_report(report: dict[str, Any], details: bool) -> None:
         ("unresolved_inputs", "Inputs with unverified metadata or matching"),
         ("input_metadata_conflicts", "Identical input bytes with conflicting metadata"),
         ("input_album_conflicts", "Identical input bytes with differing album memberships"),
+        ("input_album_duplicates", "Identical folder files carrying albums: invalid-ID risk"),
         ("source_album_title_collisions", "Ambiguous source album titles used by this input"),
         (
             "destination_album_title_collisions",
@@ -511,11 +528,18 @@ def print_server_report(report: dict[str, Any], details: bool) -> None:
         print(json.dumps({"check": "input_metadata_conflicts", **conflict}, ensure_ascii=True))
     for key in (
         "input_album_conflicts",
+        "input_album_duplicates",
         "source_album_title_collisions",
         "destination_album_title_collisions",
     ):
         for finding in report[key]:
             print(json.dumps({"check": key, **finding}, ensure_ascii=True))
+    if report["input_album_duplicates"]:
+        print(
+            "Folder upload blocked: immich-go 0.32.0 can queue an empty album asset ID "
+            "for a local duplicate. Prepare one upload copy per checksum with all "
+            "required memberships, even when the copies already list identical albums."
+        )
     if (
         report["input_album_conflicts"]
         or report["source_album_title_collisions"]

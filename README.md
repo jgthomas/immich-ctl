@@ -198,6 +198,15 @@ inclusive: `2022`, `2022-07`, `2022-07-15`, `2020,2022`, or
   from an unambiguous original in the same folder, with matching extension and
   duplicate index. These counts do not predict immich-go's extraction or upload.
 - Extraction dry runs only report the plan; upload dry runs contact the server.
+- Extraction and direct ZIP uploads cache successful whole-export collision checks
+  in `$XDG_CACHE_HOME/immich-ctl/collisions` (normally `~/.cache/immich-ctl/collisions`).
+  This includes extraction dry runs; no extraction output is written. Changed ZIP
+  identity, size, timestamps, input sets or checker code require a fresh check.
+  The cache assumes downloaded ZIPs remain unchanged; it does not rehash entire
+  archives on each use. Metadata is always read afresh and immich-go still performs
+  its own processing. An unavailable or invalid cache falls back to checking.
+  Use `--no-cache` to bypass cache reads/writes, `--refresh-cache` to rebuild a pass,
+  or `--timings` to print phase durations to stderr. Deleting the cache is safe.
 - Archived items are included; trashed/unmatched items are excluded. Add
   `--include-partner` to include partner-shared media.
 - Uploads sync albums, set `--overwrite=false` and leave server jobs running.
@@ -246,9 +255,12 @@ Add `--config` for a read-only comparison with your Immich library:
 - Checks possible collisions within the input and reports uncertain comparisons.
 - Warns about ambiguous source titles used by the input and multiple destination
   albums sharing a relevant title. One matching destination album is normal reuse.
-- Flags identical input bytes with differing album memberships, listing the files
-  and combined memberships to preserve. Consolidate memberships on every copy or
-  prepare one upload per checksum; the script does not change albums or remove files.
+- Flags identical input bytes with differing album memberships. For prepared
+  folders, also flags identical files carrying any albums, even when memberships
+  agree: immich-go 0.32.0 can queue an empty asset ID for a skipped local duplicate
+  and fail an entire album request. `immich-upload-folder` blocks this case before
+  previews or uploads. Prepare one copy per checksum with all required memberships;
+  keep the other copies outside upload folders. No files are removed automatically.
 - Repeat `--extracted` for recovery/reviewed folders. Omit it to inspect archive
   candidates, whose filenames can differ from the prepared uploads.
 

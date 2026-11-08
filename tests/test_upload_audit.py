@@ -706,7 +706,7 @@ class UploadAuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "album inventory"):
                     self.report(folders=[self.folder])
 
-    def test_repaired_identical_files_with_differing_albums_warn_until_consolidated(self):
+    def test_identical_folder_files_still_warn_after_album_memberships_are_consolidated(self):
         self.assets = []
         for first, second in (
             (["Trip"], ["Family"]),
@@ -744,14 +744,29 @@ class UploadAuditTests(unittest.TestCase):
             self.native_media(
                 name, b"photo", fileName=name, albums=[{"title": "Trip"}, {"title": "Family"}]
             )
-        self.assertFalse(self.report(folders=[self.folder])["has_warnings"])
+        report = self.report(folders=[self.folder])
+        self.assertTrue(report["has_warnings"])
+        self.assertEqual(report["input_album_conflicts"], [])
+        self.assertEqual(report["summary"]["input_album_duplicates"], 1)
+        self.assertEqual(len(report["input_album_duplicates"][0]["copies"]), 2)
+        code, output, error = self.invoke("--extracted", self.folder)
+        self.assertEqual(code, 0, error)
+        self.assertIn("empty album asset ID", output)
         self.native_media(
             "other.jpg",
             b"photo",
             fileName="other.jpg",
             albums=[{"title": "Family"}, {"title": "Trip"}, {"title": "Trip"}],
         )
-        self.assertFalse(self.report(folders=[self.folder])["has_warnings"])
+        self.assertTrue(self.report(folders=[self.folder])["has_warnings"])
+
+    def test_albumless_identical_folder_files_have_no_album_duplicate_warning(self):
+        self.assets = []
+        for name in ("one.jpg", "two.jpg"):
+            self.native_media(name, b"photo", fileName=name)
+        report = self.report(folders=[self.folder])
+        self.assertEqual(report["input_album_duplicates"], [])
+        self.assertEqual(report["summary"]["input_album_duplicates"], 0)
 
     def test_invalid_native_album_memberships_are_not_silently_treated_as_empty(self):
         self.assets = []
