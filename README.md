@@ -12,6 +12,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
   when the input has album memberships.
 - For creating albums or adding existing assets: see [album permissions](#create-an-album-and-add-existing-photos).
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
+- For `recover-companions`: `ffprobe` on PATH (from FFmpeg); immich-go is not invoked.
 - For development: [uv](https://docs.astral.sh/uv/).
 
 ## Migration runbook
@@ -29,6 +30,7 @@ Work on one account at a time; all server commands must use that account's INI.
    normal_extract="$HOME/Pictures/immich-$trial_year"
    recovered_edits="${normal_extract}-recovered"
    recovered_numbered="${normal_extract}-recovered-numbered"
+   recovered_videos="${normal_extract}-recovered-videos"
    manual_extract="${normal_extract}-manual"
    album_map="$HOME/Pictures/immich-$trial_year-album-names.json"
    config="$HOME/.config/immich-ctl/ACCOUNT.ini"
@@ -69,7 +71,7 @@ Work on one account at a time; all server commands must use that account's INI.
 
    ```bash
    folders=(); inputs=()
-   for folder in "$normal_extract" "$recovered_edits" "$recovered_numbered" "$manual_extract"; do
+   for folder in "$normal_extract" "$recovered_edits" "$recovered_numbered" "$recovered_videos" "$manual_extract"; do
      [[ -d "$folder" ]] || continue
      folders+=("$folder")
      inputs+=(--extracted "$folder")
@@ -81,6 +83,9 @@ Work on one account at a time; all server commands must use that account's INI.
 6. **Resolve findings and repair file types and filenames.** Use [fixes and recovery](#fixes-and-recovery)
    for album names and manual recovery; record accepted uncertainties. These repairs
    change the local extraction, preserving media bytes.
+
+   After these repairs, use [companion recovery](#recover-omitted-companion-videos)
+   for omitted motion clips. Rebuild the step 5 folder arguments after adding a folder.
 
    ```bash
    for folder in "${folders[@]}"; do
@@ -400,6 +405,35 @@ invoke immich-go. Recovery contacts no server. Omit `--extracted` arguments for
 folders that do not exist. Include newly recovered folders in subsequent
 reconciliation, file-type/filename repair, upload-risk audits and validation;
 reapply any album-name mapping repairs before uploading.
+
+### Recover omitted companion videos
+
+After repairing file types and filenames, use prepared extraction folders as the
+metadata reference for omitted motion videos:
+
+```bash
+./immich-takeout recover-companions --date-range "$trial_year" \
+  --extracted "$normal_extract" --output "${normal_extract}-recovered-videos" \
+  --dry-run "${archives[@]}"
+```
+
+- Remove `--dry-run` to recover into a **new** folder, with a companion manifest
+  outside it. Repeat `--extracted` to include other recovery folders in byte coverage.
+- By default, examines unmatched video and extensionless filenames sharing a stem
+  with a supplied still. Shared embedded Live Photo identifiers establish matches;
+  filenames alone do not. Conflicting dates, GPS or still metadata remain unresolved.
+- Preserves supported prepared metadata and combines albums across matching copies.
+  Supply vetted folders with the intended partner/trash filtering already applied.
+- Add `--include-unpaired` to also scan unmatched names and recover standalone videos
+  with valid embedded capture dates. These use their own metadata and inherit no albums.
+- Recovers QuickTime/MP4 containers; other formats remain unresolved.
+- Checks dates in UTC, hashes source bytes, skips existing content, and publishes one
+  copy per checksum with combined memberships. Prefixes names to avoid collisions.
+  Source ZIPs and extracted files are unchanged; no server requests are made.
+- Use `--json` for per-file provenance and unresolved findings. Temporary local files
+  are used for ffprobe even during dry runs; no recovery output is written.
+  Reconcile and audit the resulting folder before uploading. Live Photo presentation
+  and pairing still need server validation.
 
 ### Extract individual files for manual review
 

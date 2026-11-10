@@ -17,6 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from immich_ctl.collision_cache import default_directory
+from immich_ctl.companion_recover import recover_companions
 from immich_ctl.config import ConfigError, load_config
 from immich_ctl.folder_validate import Client, ValidationError
 from immich_ctl.takeout import counts, inspect_archives, print_table, selected_media_files
@@ -234,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         ("audit", "Read-only numbered-file audit and optional Immich upload-risk comparison"),
         ("recover", "Recover missing numbered edits into a separate upload-ready folder"),
         ("recover-numbered", "Recover missing numbered non-edited media into a separate folder"),
+        ("recover-companions", "Recover omitted motion videos using prepared still metadata"),
         ("reconcile", "Read-only source byte/metadata checks across extracted folders"),
         ("extract", "Create an organised local archive with generated JSON metadata"),
         ("upload", "Upload directly from the ZIPs using immich-go"),
@@ -293,6 +295,19 @@ def main(argv: list[str] | None = None) -> int:
             metavar="DATES",
             help="Year, month, day, or inclusive range: 2022; 2022-07-15; 2020,2022",
         )
+        if name == "recover-companions":
+            sub.add_argument("--extracted", required=True, action="append", type=Path)
+            sub.add_argument("--output", required=True, type=Path)
+            sub.add_argument("--dry-run", action="store_true")
+            sub.add_argument(
+                "--json", action="store_true", help="Print provenance and unresolved cases"
+            )
+            sub.add_argument(
+                "--include-unpaired",
+                action="store_true",
+                help="Also recover standalone videos using embedded capture dates; no inferred albums",
+            )
+            continue
         if name == "reconcile":
             sub.add_argument(
                 "--album-map",
@@ -349,6 +364,30 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths:
             with zipfile.ZipFile(path):
                 pass
+        if args.action == "recover-companions":
+            report = recover_companions(
+                paths,
+                args.extracted,
+                args.output,
+                args.date_range,
+                dry_run=args.dry_run,
+                include_unpaired=args.include_unpaired,
+            )
+            if args.json:
+                print(json.dumps(report, indent=2, ensure_ascii=True))
+            else:
+                print("Companion-video recovery (local files only)")
+                print(
+                    "; ".join(f"{key}: {value}" for key, value in sorted(report["counts"].items()))
+                )
+                print("Scope: " + report["scope"])
+                print(
+                    "Dry run: no files written or server requests."
+                    if args.dry_run
+                    else "No server requests. Reconcile and audit recovered files before uploading."
+                )
+                print("Use --json for file details and unresolved associations.")
+            return 0
         if args.action == "audit":
             server_audit = None
             if not args.config and (args.extracted or args.date_range or args.include_partner):

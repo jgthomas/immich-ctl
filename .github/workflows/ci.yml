@@ -105,4 +105,7 @@ jobs:
       - name: Require upstream binary and run integrations
         run: |
           immich-go version
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          ffprobe -version
           uv run --locked python -m unittest discover -v
