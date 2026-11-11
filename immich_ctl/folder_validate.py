@@ -6,8 +6,11 @@ import hashlib
 import json
 import math
 import os
+import sqlite3
 import sys
+import time
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,12 +21,17 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from immich_ctl.config import ConfigError, load_config
 from immich_ctl.image_format import corrected_suffix
 from immich_ctl.takeout import media_type
+from immich_ctl.validation_state import Checkpoint
 
 JSON_LIMIT = 8 * 1024 * 1024
 RESPONSE_LIMIT = 16 * 1024 * 1024
 
 
 class ValidationError(Exception):
+    pass
+
+
+class TemporaryFailure(ValidationError):
     pass
 
 
@@ -38,8 +46,20 @@ class Client:
     def __init__(self, server: str, key: str, timeout: float):
         self.server, self.key, self.timeout = server, key, timeout
         self.opener = build_opener(NoRedirects())
+        self.progress: Callable[[str], None] | None = None
 
     def read(self, path: str, body: dict[str, Any] | None = None) -> Any:
+        for attempt in range(3):
+            try:
+                return self._read_once(path, body)
+            except TemporaryFailure:
+                if attempt == 2:
+                    raise
+                if self.progress:
+                    self.progress("Temporary server/connection failure; retrying request.")
+                time.sleep(2**attempt)
+
+    def _read_once(self, path: str, body: dict[str, Any] | None = None) -> Any:
         request = Request(
             self.server + path,
             data=None if body is None else json.dumps(body).encode(),
@@ -60,14 +80,20 @@ class Client:
             error.close()
             if 300 <= status < 400:
                 raise ValidationError("Redirect refused; configure the final Immich URL.") from None
+            if status in {429, 500, 502, 503, 504}:
+                raise TemporaryFailure(
+                    f"Immich returned HTTP {status}; retry validation later."
+                ) from None
             raise ValidationError(
                 f"Immich returned HTTP {status}; check the URL and API key permissions "
                 "(user.read, asset.read, album.read)."
             ) from None
-        except (URLError, OSError, ValueError):
-            raise ValidationError(
+        except (URLError, OSError):
+            raise TemporaryFailure(
                 "Connection failed; check the URL, network and TLS certificate."
             ) from None
+        except ValueError:
+            raise ValidationError("Invalid connection configuration.") from None
         if len(payload) > RESPONSE_LIMIT:
             raise ValidationError("Immich response exceeds 16 MiB; validation is incomplete.")
         try:
@@ -83,7 +109,12 @@ class Client:
         return self._search(None, owner, include_trashed=True)
 
     def _search(
-        self, checksum: str | None, owner: str, *, include_trashed: bool = False
+        self,
+        checksum: str | None,
+        owner: str,
+        *,
+        include_trashed: bool = False,
+        with_exif: bool = False,
     ) -> list[dict[str, Any]]:
         found: dict[str, dict[str, Any]] = {}
         # Explicit visibility is necessary: Immich 2 defaults searches to the timeline.
@@ -105,7 +136,7 @@ class Client:
                         **({"trashedAfter": "0001-01-01T00:00:00Z"} if trash_only else {}),
                         # withExif=true uses an inner join in Immich 2 and can hide
                         # uploads whose metadata jobs have not run. Read details separately.
-                        "withExif": False,
+                        "withExif": with_exif,
                         "withStacked": True,
                         "page": page,
                         "size": 1000,
@@ -150,6 +181,10 @@ class Client:
                 if "nextPage" not in assets:
                     raise ValidationError("Search response lacks pagination information.")
                 following = assets["nextPage"]
+                if self.progress:
+                    self.progress(
+                        f"Server inventory: {visibility}, page {page}; {len(found)} assets."
+                    )
                 if following is None:
                     break
                 if str(following) != str(page + 1) or not assets["items"]:
@@ -338,32 +373,100 @@ def inspect_folder(
     return media, warnings
 
 
-def validate(folder: Path, client: Client) -> dict[str, Any]:
+def validation_inventory(client: Client, owner: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    # Discard an inconsistent scan completely. Never silently deduplicate pages.
+    for attempt in range(3):
+        try:
+            assets = client._search(None, owner)
+            details = {a["id"]: a for a in client._search(None, owner, with_exif=True)}
+            original = {a["id"]: a for a in assets}
+            if any(
+                identity not in original or detail["checksum"] != original[identity]["checksum"]
+                for identity, detail in details.items()
+            ):
+                raise ValidationError("Asset identity changed during inventory; retry validation.")
+            return assets, details
+        except ValidationError as error:
+            if "repeated an asset across pages" not in str(error) or attempt == 2:
+                raise
+            if client.progress:
+                client.progress("Inventory changed during pagination; restarting scan.")
+            time.sleep(2**attempt)
+    raise ValidationError("Could not obtain a consistent inventory.")
+
+
+def validate(
+    folder: Path,
+    client: Client,
+    *,
+    checkpoint_path: Path | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    client.progress = progress
+    if progress:
+        progress("Inspecting local files and sidecars.")
     media, warnings = inspect_folder(folder)
+    checkpoint = Checkpoint(checkpoint_path, folder)
+    try:
+        return validate_media(folder, client, media, warnings, checkpoint)
+    finally:
+        checkpoint.close()
+
+
+def asset_detail(
+    asset: dict[str, Any], client: Client, details: dict[str, Any], owner: str
+) -> dict[str, Any]:
+    identity = asset["id"]
+    if identity not in details:
+        details[identity] = client.read("/assets/" + quote(identity, safe=""))
+    detail = details[identity]
+    if (
+        not isinstance(detail, dict)
+        or detail.get("id") != identity
+        or detail.get("ownerId") != owner
+        or detail.get("checksum") != asset["checksum"]
+        or detail.get("isTrashed", False)
+        or detail.get("visibility") == "locked"
+    ):
+        raise ValidationError("Asset identity changed during validation; retry.")
+    return detail
+
+
+def validate_media(
+    folder: Path,
+    client: Client,
+    media: list[tuple[Path, dict[str, Any] | None]],
+    warnings: list[str],
+    checkpoint: Checkpoint,
+) -> dict[str, Any]:
     user = client.read("/users/me")
     if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"]:
         raise ValidationError("Unexpected account response: no user ID.")
-    cache: dict[str, list[dict[str, Any]]] = {}
+    checkpoint.record(
+        {
+            "folder": str(folder),
+            "owner_id": user["id"],
+            "complete": False,
+            "checked": 0,
+            "total": len(media),
+        }
+    )
+    assets, details = validation_inventory(client, user["id"])
+    by_checksum: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    live_parents: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for asset in assets:
+        by_checksum[base64.b64decode(asset["checksum"]).hex()].append(asset)
+        detail = details.get(asset["id"], asset)
+        if not isinstance(detail, dict):
+            continue
+        motion = detail.get("livePhotoVideoId")
+        if detail.get("type") == "IMAGE" and isinstance(motion, str) and motion:
+            live_parents[motion].append(asset)
     album_cache: dict[str, set[str]] = {}
     rows = []
     for path, metadata in media:
-        with path.open("rb") as stream:
-            checksum = hashlib.file_digest(stream, "sha1").hexdigest()
-        if checksum not in cache:
-            cache[checksum] = client.matches(checksum, user["id"])
-            if len(cache[checksum]) == 1:
-                identity = cache[checksum][0]["id"]
-                detail = client.read("/assets/" + quote(identity, safe=""))
-                if (
-                    not isinstance(detail, dict)
-                    or detail.get("id") != identity
-                    or detail.get("ownerId") != user["id"]
-                    or detail.get("checksum") != base64.b64encode(bytes.fromhex(checksum)).decode()
-                    or detail.get("isTrashed", False)
-                ):
-                    raise ValidationError("Asset identity changed during validation; retry.")
-                cache[checksum] = [detail]
-        matches = cache[checksum]
+        checksum = checkpoint.checksum(path)
+        matches = by_checksum.get(checksum, [])
         row: dict[str, Any] = {
             "path": str(path.relative_to(folder)),
             "checksum": checksum,
@@ -377,29 +480,82 @@ def validate(folder: Path, client: Client) -> dict[str, Any]:
         elif len(matches) > 1:
             row["status"] = "ambiguous"
         else:
-            asset = matches[0]
+            asset = asset_detail(matches[0], client, details, user["id"])
             differences: list[str]
             if metadata is None:
                 differences, unchecked, checked = [], ["no usable JSON sidecar"], 0
             else:
                 if metadata.get("albums") and asset["id"] not in album_cache:
                     album_cache[asset["id"]] = client.albums(asset["id"])
+                effective_albums = set(album_cache.get(asset["id"], set()))
+                expected = metadata.get("albums")
+                wanted = (
+                    {a["title"] for a in expected}
+                    if isinstance(expected, list)
+                    and all(
+                        isinstance(a, dict) and isinstance(a.get("title"), str) for a in expected
+                    )
+                    else set()
+                )
+                # Immich presents a linked Live Photo through its still image.
+                # Only album checks inherit; the video's own metadata stays checked.
+                if asset.get("type") == "VIDEO" and wanted - effective_albums:
+                    via = []
+                    for parent in live_parents[asset["id"]]:
+                        parent = asset_detail(parent, client, details, user["id"])
+                        if (
+                            parent.get("type") != "IMAGE"
+                            or parent.get("livePhotoVideoId") != asset["id"]
+                        ):
+                            raise ValidationError("Live Photo link changed; retry validation.")
+                        identity = parent["id"]
+                        if identity not in album_cache:
+                            album_cache[identity] = client.albums(identity)
+                        if album_cache[identity] & (wanted - effective_albums):
+                            via.append(identity)
+                        effective_albums.update(album_cache[identity])
+                    if via:
+                        row["album_membership_via"] = via
                 differences, unchecked, checked = compare(
-                    metadata, asset, album_cache.get(asset["id"], set()), native=True
+                    metadata, asset, effective_albums, native=True
                 )
                 if not checked:
                     unchecked.append("no comparable sidecar metadata")
             row.update(differences=differences, unchecked=unchecked, checks=checked)
             row["status"] = "different" if differences else "incomplete" if unchecked else "ok"
         rows.append(row)
+        checkpoint.record(
+            {
+                "folder": str(folder),
+                "owner_id": user["id"],
+                "complete": False,
+                "checked": len(rows),
+                "total": len(media),
+                "last_result": row,
+            }
+        )
+        if client.progress and (len(rows) % 100 == 0 or len(rows) == len(media)):
+            client.progress(f"Validated {len(rows)}/{len(media)} files.")
     counts = Counter(row["status"] for row in rows)
-    return {
+    report = {
         "files": rows,
         "counts": {
             name: counts[name] for name in ("ok", "missing", "ambiguous", "different", "incomplete")
         },
         "warnings": warnings,
     }
+
+    checkpoint.record(
+        {
+            "folder": str(folder),
+            "owner_id": user["id"],
+            "complete": True,
+            "checked": len(rows),
+            "total": len(media),
+            "counts": report["counts"],
+        }
+    )
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -413,14 +569,39 @@ def main(argv: list[str] | None = None) -> int:
         "--details", action="store_true", help="Also list files whose checks passed"
     )
     parser.add_argument("--json", action="store_true", help="Print the full report as JSON")
+    parser.add_argument("--quiet", action="store_true", help="Hide progress on stderr")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--checkpoint", type=Path, help="Private local hash/progress database")
+    group.add_argument(
+        "--no-checkpoint", action="store_true", help="Do not save local hashes/progress"
+    )
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("--timeout must be a positive finite number")
     key = ""
     try:
         server, key = load_config(args.config.expanduser())
-        report = validate(args.folder.expanduser().resolve(), Client(server, key, args.timeout))
-    except (ValidationError, ConfigError, OSError) as error:
+        folder = args.folder.expanduser().resolve()
+        checkpoint_path = None
+        if not args.no_checkpoint:
+            identity = hashlib.sha256(str(folder).encode()).hexdigest()
+            cache_root = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+            checkpoint_path = args.checkpoint or cache_root / "immich-ctl" / "validation" / (
+                identity + ".sqlite3"
+            )
+            if checkpoint_path.expanduser().resolve() == args.config.expanduser().resolve():
+                raise ValidationError("Checkpoint cannot overwrite the credentials file.")
+
+        def progress(message: str) -> None:
+            print(message.replace(key, "[REDACTED]"), file=sys.stderr, flush=True)
+
+        report = validate(
+            folder,
+            Client(server, key, args.timeout),
+            checkpoint_path=checkpoint_path,
+            progress=None if args.quiet else progress,
+        )
+    except (ValidationError, ConfigError, OSError, sqlite3.Error) as error:
         print(
             "Error: " + str(error).replace(key, "[REDACTED]") if key else f"Error: {error}",
             file=sys.stderr,

@@ -98,9 +98,9 @@ class FolderValidationTests(unittest.TestCase):
             payload = {"id": "me"}
         elif path == "/search/metadata":
             self.assertEqual(request.get_method(), "POST")
-            self.assertEqual(body["checksum"], self.checksum)
+            self.assertNotIn("checksum", body)
             self.assertIs(body["withDeleted"], False)
-            self.assertIs(body["withExif"], False)
+            self.assertIsInstance(body["withExif"], bool)
             self.assertIs(body["withStacked"], True)
             self.assertEqual(body["size"], 1000)
             self.assertEqual(body["page"], 1)
@@ -129,7 +129,16 @@ class FolderValidationTests(unittest.TestCase):
             redirect_stderr(stderr),
         ):
             build.return_value.open.side_effect = self.respond
-            code = script.main([str(self.folder), "--config", str(self.config), *extra])
+            code = script.main(
+                [
+                    str(self.folder),
+                    "--config",
+                    str(self.config),
+                    "--quiet",
+                    "--no-checkpoint",
+                    *extra,
+                ]
+            )
         return code, stdout.getvalue(), stderr.getvalue()
 
     def test_album_membership_does_not_certify_nested_metadata(self):
@@ -164,7 +173,7 @@ class FolderValidationTests(unittest.TestCase):
         self.assertEqual(report["files"][0]["asset_ids"], ["asset-1"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual({p: p.read_bytes() for p in self.folder.iterdir()}, before)
-        self.assertEqual(len(self.calls), 6)
+        self.assertEqual(len(self.calls), 8)
         self.assertEqual(
             {body["visibility"] for method, path, body in self.calls if path == "/search/metadata"},
             {"timeline", "archive", "hidden"},
@@ -209,7 +218,7 @@ class FolderValidationTests(unittest.TestCase):
         ):
             with (
                 self.subTest(status=status),
-                patch.object(validation.Client, "matches", return_value=matches),
+                patch.object(validation, "validation_inventory", return_value=(matches, {})),
             ):
                 code, output, _ = self.invoke("--json")
             self.assertEqual(code, 2)
@@ -252,8 +261,8 @@ class FolderValidationTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(json.loads(output)["counts"]["ok"], 1)
         self.assertEqual(json.loads(output)["counts"]["different"], 1)
-        self.assertEqual(len([p for _, p, _ in self.calls if p == "/search/metadata"]), 3)
-        self.assertEqual(len([p for _, p, _ in self.calls if p == "/assets/asset-1"]), 1)
+        self.assertEqual(len([p for _, p, _ in self.calls if p == "/search/metadata"]), 6)
+        self.assertEqual(len([p for _, p, _ in self.calls if p == "/assets/asset-1"]), 0)
 
     def test_case_distinct_media_cannot_share_one_sidecar(self):
         # Equal bytes let both files match the server, so sidecar checks must
@@ -348,7 +357,7 @@ class FolderValidationTests(unittest.TestCase):
         ):
             with (
                 self.subTest(change=change),
-                patch.object(validation.Client, "matches", return_value=[self.asset]),
+                patch.object(validation, "validation_inventory", return_value=([self.asset], {})),
                 patch.object(
                     validation.Client, "read", side_effect=[{"id": "me"}, {**self.asset, **change}]
                 ),
@@ -411,7 +420,7 @@ class FolderValidationTests(unittest.TestCase):
                 with patch.object(self, "respond", side_effect=respond):
                     code, _, error = self.invoke("--timeout", str(timeout))
                 self.assertEqual(code, 0, error)
-                self.assertEqual(observed, [timeout] * 6)
+                self.assertEqual(observed, [timeout] * 8)
 
     def test_unreadable_directories_and_interrupts_cannot_report_success(self):
         def unreadable(folder, *, onerror, followlinks):
@@ -445,7 +454,9 @@ class FolderValidationTests(unittest.TestCase):
         with patch.object(validation.Client, "read", return_value={}):
             self.assertEqual(self.invoke()[0], 1)
         with patch.object(
-            validation.Client, "matches", return_value=[{**self.asset, "id": "wrong-id"}]
+            validation,
+            "validation_inventory",
+            return_value=([{**self.asset, "id": "wrong-id"}], {}),
         ):
             # Any unexpected route in the responder would be a test failure; return a wrong detail directly.
             with patch.object(validation.Client, "read", side_effect=[{"id": "me"}, self.asset]):
@@ -459,6 +470,11 @@ class FolderValidationTests(unittest.TestCase):
 
 
 class ApiTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(validation.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def client(self):
         return validation.Client("https://example/api", "synthetic-key", 7)
 

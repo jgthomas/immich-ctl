@@ -634,9 +634,22 @@ After uploading, check the extracted files against the same user's library:
   Album descriptions, locations and other nested album fields are explicitly
   unchecked and produce an `incomplete` result.
 - A Live Photo video's expected albums may be supplied by its server-linked
+  still image. Only active images owned by the same user qualify; filenames
+  and dates do not establish a link. The video's own metadata is still checked
+  separately. JSON results record contributing still IDs as `album_membership_via`.
 - Add `--details` to list passing files too, or `--json` for the full report.
   Exit codes: `0` all available checks passed, `2` findings/incomplete checks,
   `1` operational error; interrupted runs return `130`.
+- Server inventories and metadata are read in batches. Temporary connection
+  failures and HTTP 429/500/502/503/504 responses get up to three attempts, with
+  short delays. `--timeout` sets the timeout per request (default: 30 seconds).
+- Progress goes to stderr; `--quiet` hides it without affecting JSON output.
+  Unchanged local hashes and the latest progress are saved in
+  `${XDG_CACHE_HOME:-~/.cache}/immich-ctl/validation/`. Rerun the same command
+  after a failure to reuse those hashes. Server metadata, album memberships and
+  local sidecars are always checked afresh. Use `--checkpoint /path/to/state.sqlite3`
+  to choose the checkpoint, or `--no-checkpoint` to disable it. Keep checkpoints
+  outside upload folders; they contain local paths and hashes, not API keys.
 - Reads local files and contacts Immich without changing either. Metadata jobs
   may need to finish before rerunning. This does not test playback, visual
   duplicates, original downloads or backup restoration. Keep the Takeout ZIPs.

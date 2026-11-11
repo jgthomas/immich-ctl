@@ -921,7 +921,9 @@ class UploadAuditTests(unittest.TestCase):
                 report["existing_checksum"][0]["unchecked"],
             )
         client = self.client()
-        with patch.object(client, "matches", return_value=[self.asset]):
+        with patch(
+            "immich_ctl.folder_validate.validation_inventory", return_value=([self.asset], {})
+        ):
             checked = validate(extracted, client)
         self.assertEqual(checked["counts"]["incomplete"], 1)
         for field in ("longitude", "favorited", "archived"):
