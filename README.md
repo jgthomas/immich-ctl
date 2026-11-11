@@ -633,6 +633,7 @@ After uploading, check the extracted files against the same user's library:
   cannot identify a particular album, and extra memberships are allowed.
   Album descriptions, locations and other nested album fields are explicitly
   unchecked and produce an `incomplete` result.
+- A Live Photo video's expected albums may be supplied by its server-linked
 - Add `--details` to list passing files too, or `--json` for the full report.
   Exit codes: `0` all available checks passed, `2` findings/incomplete checks,
   `1` operational error; interrupted runs return `130`.
