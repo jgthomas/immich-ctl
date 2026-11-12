@@ -269,7 +269,9 @@ Add `--config` for a read-only comparison with your Immich library:
 - Repeat `--extracted` for recovery/reviewed folders. Omit it to inspect archive
   candidates, whose filenames can differ from the prepared uploads.
 
-Server comparisons hash media and may take time. `--date-range` filters archive
+Server comparisons fetch fresh metadata in paginated batches, with individual
+reads for matching assets missing from the metadata batch. They still hash local
+media and may take time. `--date-range` filters archive
 candidates; supplied upload folders are always audited in full, with warnings for
 files outside the requested dates. Numbered-file counts remain export-wide. Findings are snapshot warnings,
 not an upload guarantee; successful reports return exit status zero even with

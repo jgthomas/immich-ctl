@@ -233,12 +233,36 @@ def destination_album_collisions(client: Client, titles: set[str]) -> list[dict[
     ]
 
 
+def audit_inventory(
+    client: Client, owner: str
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Keep the uploader's scope; an EXIF inner join must not hide pending assets."""
+    inventory = client.inventory(owner)
+    original = {asset["id"]: asset for asset in inventory}
+    metadata = client._search(None, owner, include_trashed=True, with_exif=True)
+    details = {}
+    for asset in metadata:
+        stub = original.get(asset["id"])
+        if (
+            stub is None
+            or any(
+                asset.get(field) != stub.get(field)
+                for field in ("ownerId", "checksum", "originalFileName", "libraryId")
+            )
+            or bool(asset.get("isTrashed", False)) != bool(stub.get("isTrashed", False))
+        ):
+            raise ValidationError("Asset changed during the audit; retry with a fresh snapshot.")
+        if not asset.get("libraryId"):
+            details[asset["id"]] = asset
+    return [a for a in inventory if not a.get("libraryId")], details
+
+
 def server_report(inputs: list[dict[str, Any]], client: Client) -> dict[str, Any]:
     user = client.read("/users/me")
     if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"]:
         raise ValidationError("Unexpected account response: no user ID.")
     owner = user["id"]
-    inventory = [a for a in client.inventory(owner) if not a.get("libraryId")]
+    inventory, details = audit_inventory(client, owner)
     by_checksum: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     by_name: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for asset in inventory:
@@ -248,26 +272,23 @@ def server_report(inputs: list[dict[str, Any]], client: Client) -> dict[str, Any
             )
         by_checksum[base64.b64decode(asset["checksum"], validate=True).hex()].append(asset)
         by_name[asset["originalFileName"]].append(asset)
-    details = {}
 
     def detail(stub: dict[str, Any]) -> dict[str, Any]:
         identity = stub["id"]
         if identity not in details:
-            value = client.read("/assets/" + quote(identity, safe=""))
-            if (
-                not isinstance(value, dict)
-                or value.get("id") != identity
-                or value.get("ownerId") != owner
-                or value.get("checksum") != stub["checksum"]
-                or value.get("originalFileName") != stub["originalFileName"]
-                or bool(value.get("isTrashed", False)) != bool(stub.get("isTrashed", False))
-                or value.get("libraryId")
-            ):
-                raise ValidationError(
-                    "Asset changed during the audit; retry with a fresh snapshot."
-                )
-            details[identity] = value
-        return details[identity]
+            details[identity] = client.read("/assets/" + quote(identity, safe=""))
+        value = details[identity]
+        if (
+            not isinstance(value, dict)
+            or value.get("id") != identity
+            or value.get("ownerId") != owner
+            or value.get("checksum") != stub["checksum"]
+            or value.get("originalFileName") != stub["originalFileName"]
+            or bool(value.get("isTrashed", False)) != bool(stub.get("isTrashed", False))
+            or value.get("libraryId")
+        ):
+            raise ValidationError("Asset changed during the audit; retry with a fresh snapshot.")
+        return value
 
     existing, heuristic, unresolved = [], [], []
     for row in inputs:

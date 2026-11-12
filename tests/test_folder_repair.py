@@ -267,6 +267,7 @@ class FolderRepairTests(unittest.TestCase):
                 side_effect=lambda path: {"/users/me": {"id": "me"}, "/albums": []}[path],
             ),
             patch.object(client, "inventory", return_value=[]),
+            patch.object(client, "_search", return_value=[]),
         ):
             before = upload_audit([], client, folders=[self.folder])
             self.assertEqual(len(before["within_input_matches"]), 1)

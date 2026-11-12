@@ -98,6 +98,7 @@ class UploadAuditTests(unittest.TestCase):
         self.calls = []
         self.page_size = 1000
         self.override_detail = None
+        self.omit_batch_ids = set()
         self.failure = None
         self.destination_albums = []
 
@@ -117,7 +118,7 @@ class UploadAuditTests(unittest.TestCase):
             result = {"id": "me"}
         elif (method, path) == ("POST", "/search/metadata"):
             self.assertNotIn("checksum", body)
-            self.assertIs(body["withExif"], False)
+            self.assertIsInstance(body["withExif"], bool)
             self.assertIs(body["withDeleted"], True)
             self.assertIs(body["withStacked"], True)
             start = (body["page"] - 1) * self.page_size
@@ -127,6 +128,12 @@ class UploadAuditTests(unittest.TestCase):
                 if a.get("visibility") == body["visibility"]
                 and bool(a.get("isTrashed", False)) == bool(body.get("trashedAfter"))
             ]
+            if body["withExif"]:
+                matches = [a for a in matches if a["id"] not in self.omit_batch_ids]
+                if self.override_detail is not None:
+                    matches = [
+                        self.override_detail if a["id"] == self.asset["id"] else a for a in matches
+                    ]
             result = {
                 "assets": {
                     "items": matches[start : start + self.page_size],
@@ -465,7 +472,7 @@ class UploadAuditTests(unittest.TestCase):
         self.assertFalse(report["has_warnings"])
         self.assertEqual(report["summary"]["existing_checksum_files"], 2)
         self.assertEqual(report["summary"]["metadata_difference_matches"], 0)
-        self.assertEqual(sum(path.startswith("/assets/") for _, path, _ in self.calls), 1)
+        self.assertEqual(sum(path.startswith("/assets/") for _, path, _ in self.calls), 0)
 
     def test_unknown_metadata_and_server_time_or_size_are_not_certified(self):
         self.asset["exifInfo"].pop("dateTimeOriginal")
@@ -812,7 +819,7 @@ class UploadAuditTests(unittest.TestCase):
         self.assertEqual(match["differences"], [])
         self.assertTrue(any("in trash" in note for note in match["unchecked"]))
         searches = [body for _, path, body in self.calls if path == "/search/metadata"]
-        self.assertEqual(len(searches), 6)
+        self.assertEqual(len(searches), 12)
         self.assertEqual(
             {(q["visibility"], bool(q.get("trashedAfter"))) for q in searches},
             {(v, trash) for v in ("timeline", "archive", "hidden") for trash in (False, True)},
@@ -948,8 +955,7 @@ class UploadAuditTests(unittest.TestCase):
             for method, path, _ in self.calls
             if method == "GET" and path.startswith("/assets/")
         ]
-        self.assertIn("/assets/earlier-nonmatch", detail_reads)
-        self.assertIn("/assets/remote%2Fid", detail_reads)
+        self.assertEqual(detail_reads, [])
 
     def test_valid_metadata_copy_cannot_hide_conflicting_or_unreadable_copies(self):
         self.assets = []
@@ -993,7 +999,7 @@ class UploadAuditTests(unittest.TestCase):
             for _, path, body in self.calls
             if path == "/search/metadata" and "trashedAfter" in body
         ]
-        self.assertEqual(len(trash_queries), 3)
+        self.assertEqual(len(trash_queries), 6)
         self.assertEqual(
             {body["visibility"] for body in trash_queries}, {"timeline", "archive", "hidden"}
         )
