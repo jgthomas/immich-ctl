@@ -299,6 +299,19 @@ def main(argv: list[str] | None = None) -> int:
             sub.add_argument("--extracted", required=True, action="append", type=Path)
             sub.add_argument("--output", required=True, type=Path)
             sub.add_argument("--dry-run", action="store_true")
+            plans = sub.add_mutually_exclusive_group()
+            plans.add_argument(
+                "--save-plan",
+                type=Path,
+                metavar="JSON",
+                help="Save this dry run for later extraction",
+            )
+            plans.add_argument(
+                "--apply-plan",
+                type=Path,
+                metavar="JSON",
+                help="Extract a saved plan after checking unchanged inputs",
+            )
             sub.add_argument(
                 "--json", action="store_true", help="Print provenance and unresolved cases"
             )
@@ -372,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.date_range,
                 dry_run=args.dry_run,
                 include_unpaired=args.include_unpaired,
+                save_plan=args.save_plan,
+                apply_plan=args.apply_plan,
             )
             if args.json:
                 print(json.dumps(report, indent=2, ensure_ascii=True))
@@ -382,7 +397,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print("Scope: " + report["scope"])
                 print(
-                    "Dry run: no files written or server requests."
+                    (
+                        "Dry run: recovery plan saved; no media written or server requests."
+                        if args.save_plan
+                        else "Dry run: no files written or server requests."
+                    )
                     if args.dry_run
                     else "No server requests. Reconcile and audit recovered files before uploading."
                 )

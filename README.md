@@ -12,7 +12,8 @@ Standalone scripts for Immich and Google Photos Takeout archives.
   when the input has album memberships.
 - For creating albums or adding existing assets: see [album permissions](#create-an-album-and-add-existing-photos).
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
-- For `recover-companions`: `ffprobe` on PATH (from FFmpeg); immich-go is not invoked.
+- For `recover-companions` scanning/planning: `ffprobe` on PATH (from FFmpeg).
+  Applying a saved plan does not require it; immich-go is not invoked.
 - For development: [uv](https://docs.astral.sh/uv/).
 
 ## Migration runbook
@@ -416,11 +417,28 @@ metadata reference for omitted motion videos:
 ```bash
 ./immich-takeout recover-companions --date-range "$trial_year" \
   --extracted "$normal_extract" --output "${normal_extract}-recovered-videos" \
-  --dry-run "${archives[@]}"
+  --dry-run --save-plan "${normal_extract}-companions-plan.json" "${archives[@]}"
 ```
 
-- Remove `--dry-run` to recover into a **new** folder, with a companion manifest
+Review the report, then apply its saved decisions without repeating media hashing,
+archive metadata inspection or video probing:
+
+```bash
+./immich-takeout recover-companions --date-range "$trial_year" \
+  --extracted "$normal_extract" --output "${normal_extract}-recovered-videos" \
+  --apply-plan "${normal_extract}-companions-plan.json" "${archives[@]}"
+```
+
+- Applying the plan recovers into a **new** folder, with a companion manifest
   outside it. Repeat `--extracted` to include other recovery folders in byte coverage.
+- Plans require the same ZIPs, folders, output, dates and `--include-unpaired` setting.
+  Apply checks archive/file fingerprints, the full extracted-file roster and JSON
+  hashes; repairs or other input changes require a new dry run. Recovered bytes
+  are still verified against the planned SHA-256 before publication. Plans are
+  private files; keep them outside upload folders. No Immich access is needed.
+  Existing plan files are never overwritten.
+- Both plan options are optional: omit `--save-plan` for an ordinary dry run, or
+  omit `--dry-run` and both plan options to scan and recover in one command.
 - By default, examines unmatched video and extensionless filenames sharing a stem
   with a supplied still. Shared embedded Live Photo identifiers establish matches;
   filenames alone do not. Conflicting dates, GPS or still metadata remain unresolved.

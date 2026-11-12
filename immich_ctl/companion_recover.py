@@ -9,10 +9,12 @@ import subprocess
 import tempfile
 import zipfile
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from datetime import UTC, date
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from immich_ctl import recovery_plan
 from immich_ctl.folder_compat import native_sidecar_issues
 from immich_ctl.folder_validate import inspect_folder, timestamp
 from immich_ctl.takeout import FileKey, google_photos_path, inspect_archives, media_type
@@ -207,7 +209,12 @@ def destinations(paths: list[Path], folders: list[Path], output: Path) -> tuple[
 
 
 def publish(
-    rows: list[dict[str, Any]], output: Path, manifest: Path, report: dict[str, Any]
+    rows: list[dict[str, Any]],
+    output: Path,
+    manifest: Path,
+    report: dict[str, Any],
+    *,
+    verify_inputs: Callable[[], None] | None = None,
 ) -> None:
     """Stage everything and verify bytes before publishing; never overwrite files."""
     stage = Path(tempfile.mkdtemp(prefix=".immich-companions-", dir=output.parent))
@@ -218,6 +225,10 @@ def publish(
             with zipfile.ZipFile(archive_path) as archive:
                 for row in (r for r in rows if r["archive"] == archive_path):
                     entries = archive.infolist()
+                    if row["entry_index"] >= len(entries):
+                        raise RecoveryError(
+                            "Source archive entry is missing from the recovery plan."
+                        )
                     entry = entries[row["entry_index"]]
                     if (entry.filename, entry.CRC, entry.file_size) != (
                         row["member"],
@@ -234,6 +245,8 @@ def publish(
                     target.with_name(target.name + ".JSON").write_text(
                         json.dumps(row["metadata"], indent=2, allow_nan=False) + "\n"
                     )
+        if verify_inputs:
+            verify_inputs()
         # Reserve the companion manifest exclusively before publishing the directory.
         with manifest.open("x", encoding="utf-8") as stream:
             manifest_created = True
@@ -262,10 +275,40 @@ def recover_companions(
     *,
     dry_run: bool = False,
     include_unpaired: bool = False,
+    save_plan: Path | None = None,
+    apply_plan: Path | None = None,
 ) -> dict[str, Any]:
+    if (save_plan is not None and not dry_run) or (
+        apply_plan is not None and (dry_run or save_plan is not None)
+    ):
+        raise RecoveryError("Use --save-plan with --dry-run, or --apply-plan without --dry-run.")
     paths = sorted({p.expanduser().resolve() for p in paths})
     folders = sorted({p.expanduser().resolve() for p in folders})
     output, manifest = destinations(paths, folders, output)
+    if apply_plan is not None:
+        source_plan = recovery_plan.destination(apply_plan, paths, folders, output)
+        saved_inputs, report = recovery_plan.load(source_plan)
+        validate_plan(report, paths, folders, output, selection, include_unpaired)
+        recovery_plan.unchanged(saved_inputs, paths, folders)
+        report = {**report, "dry_run": False, "applied_plan": str(source_plan)}
+        recoveries = [r for r in report["files"] if r["status"] == "recover"]
+        if recoveries:
+            publish(
+                recoveries,
+                output,
+                manifest,
+                report,
+                verify_inputs=lambda: recovery_plan.unchanged(saved_inputs, paths, folders),
+            )
+        return report
+    plan = (
+        recovery_plan.destination(save_plan, paths, folders, output)
+        if save_plan is not None
+        else None
+    )
+    if plan is not None and (plan.exists() or plan.is_symlink()):
+        raise RecoveryError("Plan already exists; choose a new path.")
+    inputs = recovery_plan.snapshot(paths, folders) if plan is not None else None
     binary = shutil.which("ffprobe")
     if binary is None:
         raise RecoveryError("recover-companions requires ffprobe on PATH (from FFmpeg).")
@@ -379,4 +422,64 @@ def recover_companions(
     }
     if not dry_run and recoveries:
         publish(recoveries, output, manifest, report)
+    if plan is not None and inputs is not None:
+        recovery_plan.unchanged(inputs, paths, folders)
+        recovery_plan.save(plan, inputs, report)
     return report
+
+
+def validate_plan(
+    report: dict[str, Any],
+    paths: list[Path],
+    folders: list[Path],
+    output: Path,
+    selection: tuple[date, date],
+    include_unpaired: bool,
+) -> None:
+    """Reject mismatched options and unsafe destinations before staging any files."""
+    try:
+        if (
+            report["dry_run"] is not True
+            or report["date_range"] != [d.isoformat() for d in selection]
+            or report["extracted_folders"] != [str(p) for p in folders]
+            or report["output"] != str(output)
+            or report["include_unpaired"] is not include_unpaired
+            or not isinstance(report["files"], list)
+        ):
+            raise ValueError()
+        names: set[str] = set()
+        checksums: set[str] = set()
+        for row in report["files"]:
+            if row["archive"] not in {str(p) for p in paths}:
+                raise ValueError()
+            if row["status"] != "recover":
+                continue
+            name = row["output_name"]
+            captured = timestamp(row["metadata"].get("dateTaken"))
+            if (
+                not isinstance(name, str)
+                or name in {"", ".", ".."}
+                or PurePosixPath(name).name != name
+                or "\\" in name
+                or name.casefold() in names
+                or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                or row["sha256"] in checksums
+                or row["metadata"].get("fileName") != name
+                or row["metadata"].get("software") != MARKER
+                or captured is None
+                or not selection[0] <= captured.astimezone(UTC).date() <= selection[1]
+                or type(row["entry_index"]) is not int
+                or row["entry_index"] < 0
+                or type(row["crc32"]) is not int
+                or not 0 <= row["crc32"] <= 0xFFFFFFFF
+                or type(row["size"]) is not int
+                or row["size"] < 0
+                or not isinstance(row["member"], str)
+            ):
+                raise ValueError()
+            names.add(name.casefold())
+            checksums.add(row["sha256"])
+        if report["counts"] != dict(Counter(r["status"] for r in report["files"])):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise RecoveryError("Recovery plan does not match these options or is invalid.") from None
