@@ -71,7 +71,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("recover: 1; covered: 0", out)
         self.assertIn(hashlib.sha256(b"edited").hexdigest(), out)
-        self.assertIn("no files written", out)
+        self.assertIn("no recovery files written", out)
         run.assert_not_called()
         self.assertEqual(self.archive.read_bytes(), before)
         self.assertEqual(set(self.root.rglob("*")), original_files)

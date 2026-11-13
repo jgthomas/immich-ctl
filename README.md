@@ -271,12 +271,12 @@ Add `--config` for a read-only comparison with your Immich library:
   candidates, whose filenames can differ from the prepared uploads.
 
 Server comparisons fetch fresh metadata in paginated batches, with individual
-reads for matching assets missing from the metadata batch. They still hash local
-media and may take time. `--date-range` filters archive
+reads for matching assets missing from the metadata batch. Unchanged local media
+can reuse the shared checksum cache described below. `--date-range` filters archive
 candidates; supplied upload folders are always audited in full, with warnings for
 files outside the requested dates. Numbered-file counts remain export-wide. Findings are snapshot warnings,
 not an upload guarantee; successful reports return exit status zero even with
-warnings. No files or server data are changed. Use `--details` or `--json` for findings.
+warnings. No source/extraction files or server data are changed. Use `--details` or `--json` for findings.
 Server scope includes trash, matching immich-go's inventory; locked and
 external-library assets are excluded. Trashed checksum matches are flagged because
 they may prevent an active upload. Native sidecar omissions are reported as unverified
@@ -673,6 +673,24 @@ After uploading, check the extracted files against the same user's library:
 - Reads local files and contacts Immich without changing either. Metadata jobs
   may need to finish before rerunning. This does not test playback, visual
   duplicates, original downloads or backup restoration. Keep the Takeout ZIPs.
+
+## Shared local checksum cache
+
+Reconciliation, prepared-folder upload-risk audits and validation share SHA-1 and
+SHA-256 hashes in `${XDG_CACHE_HOME:-~/.cache}/immich-ctl/local-hashes.sqlite3`.
+The first read computes both hashes; later commands reuse them only when the
+canonical path, device, inode, size, mtime and ctime still match. Numbered recovery
+also benefits when checking existing extracted files.
+
+The cache contains local paths and hashes, is created with private permissions,
+and stays outside supplied extraction folders. Sidecars, album expectations,
+archive contents and server data are not cached here. Missing, unavailable or
+invalid cache entries fall back to hashing; deleting the database is safe.
+Set `IMMICH_CTL_NO_HASH_CACHE=1` to disable this shared cache. Validation's existing
+checkpoint remains separate; `--no-checkpoint` disables both caches for validation.
+Checks and dry runs may update the private cache, but leave source and extraction
+files unchanged. Reading source ZIP media and scanning embedded Live Photo IDs
+can still take time.
 
 ## Test Immich credentials
 

@@ -10,6 +10,7 @@ from typing import Any
 
 from immich_ctl.album_names import apply_names
 from immich_ctl.folder_compat import JSON_LIMIT, sidecar_state
+from immich_ctl.local_hashes import LocalHashes
 from immich_ctl.takeout import (
     Coverage,
     FileKey,
@@ -116,16 +117,19 @@ def reconcile_report(
     local: defaultdict[str, list[dict[str, str]]] = defaultdict(list)
     sidecars: dict[Path, dict[str, list[Path]]] = {}
     local_metadata: dict[Path, dict[str, Any]] = {}
-    for folder in folders:
-        for checksum, relatives in folder_checksums(folder).items():
-            for local_relative in relatives:
-                local[checksum].append(
-                    {
-                        "folder": str(folder),
-                        "path": local_relative,
-                        "sidecar": sidecar_state(folder / local_relative, sidecars, local_metadata),
-                    }
-                )
+    with LocalHashes(folders) as hashes:
+        for folder in folders:
+            for checksum, relatives in folder_checksums(folder, cache=hashes).items():
+                for local_relative in relatives:
+                    local[checksum].append(
+                        {
+                            "folder": str(folder),
+                            "path": local_relative,
+                            "sidecar": sidecar_state(
+                                folder / local_relative, sidecars, local_metadata
+                            ),
+                        }
+                    )
     _, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
     if album_map is not None:
         apply_names(album_map, coverage, titles)
@@ -469,5 +473,6 @@ def reconcile(
         "\nScope: local SHA-256 byte coverage and supported source metadata checks. "
         "Album-folder copies count separately; repeated ZIP entries count once. "
         "Supported source fields and exact album associations are compared with generated JSON. Other metadata is outside this check. "
-        "This does not check Immich uploads or backups. No files written or server requests."
+        "This does not check Immich uploads or backups. No source/extraction files written "
+        "or server requests; the private local checksum cache may be updated."
     )

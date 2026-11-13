@@ -1,11 +1,12 @@
 """Private local hash checkpoints; server metadata is always fetched afresh."""
 
-import hashlib
 import json
 import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+from immich_ctl.local_hashes import LocalHashes
 
 
 def fingerprint(path: Path) -> list[int]:
@@ -16,6 +17,7 @@ def fingerprint(path: Path) -> list[int]:
 class Checkpoint:
     def __init__(self, path: Path | None, folder: Path):
         self.db: sqlite3.Connection | None = None
+        self.shared = LocalHashes([folder], enabled=False)
         if path is None:
             return
         path = path.expanduser().absolute()
@@ -44,6 +46,7 @@ class Checkpoint:
                 "CREATE TABLE IF NOT EXISTS progress (id INTEGER PRIMARY KEY, report TEXT NOT NULL)"
             )
             self.db.commit()
+            self.shared = LocalHashes([folder])
         except sqlite3.Error:
             self.close()
             raise OSError(
@@ -51,6 +54,7 @@ class Checkpoint:
             ) from None
 
     def close(self) -> None:
+        self.shared.close()
         if self.db is not None:
             self.db.close()
 
@@ -65,8 +69,7 @@ class Checkpoint:
             value = saved[1]
             if len(value) == 40 and all(c in "0123456789abcdef" for c in value):
                 return value
-        with path.open("rb") as stream:
-            value = hashlib.file_digest(stream, "sha1").hexdigest()
+        value = self.shared.checksums(path)["sha1"]
         if fingerprint(path) != before:
             raise OSError("Local media changed while hashing; retry validation.")
         if self.db is not None:

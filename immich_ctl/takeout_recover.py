@@ -8,11 +8,12 @@ import tempfile
 import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
 
+from immich_ctl.local_hashes import LocalHashes
 from immich_ctl.takeout import (
     FileKey,
     ItemIdentity,
@@ -35,7 +36,7 @@ def digest(stream: IO[bytes]) -> str:
     return checksum.hexdigest()
 
 
-def folder_checksums(folder: Path) -> dict[str, list[str]]:
+def folder_checksums(folder: Path, *, cache: LocalHashes | None = None) -> dict[str, list[str]]:
     """Fail on unreadable paths or symlinks rather than claim complete coverage."""
     if not folder.is_dir():
         raise RecoveryError("--extracted must be an existing extracted folder.")
@@ -44,14 +45,18 @@ def folder_checksums(folder: Path) -> dict[str, list[str]]:
     def scan_error(error: OSError) -> None:
         raise error
 
-    for directory, directories, names in os.walk(folder, followlinks=False, onerror=scan_error):
-        for name in sorted(directories + names):
-            path = Path(directory) / name
-            if path.is_symlink():
-                raise RecoveryError(f"Symlinks are not supported in extracted folders: {path!s}")
-            if path.is_file() and media_type(path.name) != "Other":
-                with path.open("rb") as stream:
-                    checksums[digest(stream)].append(str(path.relative_to(folder)))
+    with LocalHashes([folder]) if cache is None else nullcontext(cache) as hashes:
+        for directory, directories, names in os.walk(folder, followlinks=False, onerror=scan_error):
+            for name in sorted(directories + names):
+                path = Path(directory) / name
+                if path.is_symlink():
+                    raise RecoveryError(
+                        f"Symlinks are not supported in extracted folders: {path!s}"
+                    )
+                if path.is_file() and media_type(path.name) != "Other":
+                    checksums[hashes.checksums(path)["sha256"]].append(
+                        str(path.relative_to(folder))
+                    )
     return dict(checksums)
 
 
@@ -85,11 +90,13 @@ def recover(
     if output in paths or manifest in paths or any(output in p.parents for p in paths):
         raise RecoveryError("Recovery output must be separate from the source ZIPs.")
     existing: defaultdict[str, list[str]] = defaultdict(list)
-    for folder in folders:
-        for checksum, relatives in folder_checksums(folder).items():
-            existing[checksum].extend(
-                str(folder / relative) if len(folders) > 1 else relative for relative in relatives
-            )
+    with LocalHashes(folders) as hashes:
+        for folder in folders:
+            for checksum, relatives in folder_checksums(folder, cache=hashes).items():
+                existing[checksum].extend(
+                    str(folder / relative) if len(folders) > 1 else relative
+                    for relative in relatives
+                )
     _, memberships, titles, _, warnings, _, coverage = inspect_archives(paths)
     kind = "numbered_media" if numbered_files else "numbered_edit"
     association = "direct" if numbered_files else "candidate"
@@ -255,11 +262,11 @@ def recover(
             print("Inspection warnings: " + json.dumps(dict(warnings), ensure_ascii=True))
         planned = [row for row in rows if row["status"] == "recover"]
         if dry_run:
-            print("Dry run: no files written, no immich-go invocation or server requests.")
+            print("Dry run: no recovery files written, no immich-go invocation or server requests.")
             return 0
         if not planned:
             noun = "files" if numbered_files else "edits"
-            print(f"No recoverable missing numbered {noun}; no files written.")
+            print(f"No recoverable missing numbered {noun}; no recovery files written.")
             return 0
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(

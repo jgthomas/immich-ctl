@@ -255,7 +255,7 @@ class ScalingTests(unittest.TestCase):
         self.fixture.sidecar.write_text(json.dumps(self.fixture.metadata))
         self.fixture.calls.clear()
         with patch(
-            "immich_ctl.validation_state.hashlib.file_digest",
+            "immich_ctl.local_hashes.hash_file",
             side_effect=AssertionError("Unchanged media rehashed"),
         ):
             code, output, error = self.invoke("--json", "--checkpoint", str(self.db))
@@ -289,7 +289,7 @@ class ScalingTests(unittest.TestCase):
                 json.loads(db.execute("SELECT report FROM progress").fetchone()[0])["complete"]
             )
         with patch(
-            "immich_ctl.validation_state.hashlib.file_digest",
+            "immich_ctl.local_hashes.hash_file",
             side_effect=AssertionError("Rehashed"),
         ):
             code, output, error = self.invoke("--json", "--checkpoint", str(self.db))
@@ -301,7 +301,10 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(code, 0, progress)
         self.assertEqual(json.loads(output)["counts"]["ok"], 1)
         self.assertIn("Server inventory:", progress)
-        self.assertEqual(len(list((self.root / "cache").rglob("*.sqlite3"))), 1)
+        self.assertEqual(
+            len(list((self.root / "cache" / "immich-ctl" / "validation").glob("*.sqlite3"))), 1
+        )
+        self.assertTrue((self.root / "cache" / "immich-ctl" / "local-hashes.sqlite3").is_file())
         code, output, progress = self.invoke("--json", "--quiet", "--no-checkpoint")
         self.assertEqual(code, 0)
         self.assertEqual(progress, "")

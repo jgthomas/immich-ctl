@@ -344,6 +344,9 @@ class ReconcileTests(unittest.TestCase):
             with real_open(path, *args, **kwargs) as stream:
 
                 class Reader:
+                    def fileno(reader):
+                        return stream.fileno()
+
                     def read(reader, size=-1):
                         self.assertIsInstance(size, int)
                         self.assertGreater(size, 0)
@@ -546,6 +549,7 @@ class ReconcileTests(unittest.TestCase):
         before = {str(p): p.read_bytes() if p.is_file() else None for p in self.root.rglob("*")}
         for arguments in ([], ["--details"], ["--json"]):
             with (
+                patch.dict(os.environ, {"IMMICH_CTL_NO_HASH_CACHE": "1"}),
                 patch("subprocess.run", side_effect=AssertionError("no tool")),
                 patch("urllib.request.urlopen", side_effect=AssertionError("no server")),
                 patch.object(takeout, "load_config", side_effect=AssertionError("no config")),

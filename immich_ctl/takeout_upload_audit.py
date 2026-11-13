@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from immich_ctl.folder_compat import JSON_LIMIT, sidecar_state
 from immich_ctl.folder_validate import Client, ValidationError, compare, inspect_folder, timestamp
+from immich_ctl.local_hashes import LocalHashes
 from immich_ctl.takeout import FileKey, google_photos_path, inspect_archives
 from immich_ctl.takeout_metadata import duplicate_album_titles, expectation
 from immich_ctl.takeout_reconcile import source_rows
@@ -134,60 +135,71 @@ def folder_inputs(
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     cache: dict[Path, dict[str, list[Path]]] = {}
-    for folder in sorted({p.expanduser().resolve() for p in folders}):
-        files, notes = inspect_folder(folder)
-        warnings.extend(str(folder) + ": " + note for note in notes)
-        for path, data in files:
-            state = sidecar_state(path, cache)
-            issues = [] if state == "present_unverified" else [state + " native sidecar"]
-            captured = timestamp(data.get("dateTaken")) if data is not None and not issues else None
-            if captured is not None:
-                captured = captured.astimezone(UTC)
-            if captured is not None and not selection[0] <= captured.date() <= selection[1]:
-                warnings.append(
-                    "Outside requested dates; included in folder upload audit: " + str(path)
+    with LocalHashes(folders) as hashes:
+        for folder in sorted({p.expanduser().resolve() for p in folders}):
+            files, notes = inspect_folder(folder)
+            warnings.extend(str(folder) + ": " + note for note in notes)
+            for path, data in files:
+                state = sidecar_state(path, cache)
+                issues = [] if state == "present_unverified" else [state + " native sidecar"]
+                captured = (
+                    timestamp(data.get("dateTaken")) if data is not None and not issues else None
                 )
-            if captured is None:
-                issues.append("capture time unavailable; filename/time matching cannot be assessed")
-            with path.open("rb") as stream:
-                checksum = sha1(stream)
-            expected = {
-                key: value
-                for key, value in (data or {}).items()
-                if key
-                in {"dateTaken", "description", "latitude", "longitude", "favorited", "archived"}
-            }
-            _, unchecked, _ = compare(expected, {}, set())
-            issues.extend(note for note in unchecked if note.startswith("invalid sidecar"))
-            if data and data.get("tags"):
-                issues.append("native tags are not checked")
-            albums = (data or {}).get("albums", [])
-            if not isinstance(albums, list) or any(
-                not isinstance(album, dict)
-                or not isinstance(album.get("title"), str)
-                or not album["title"]
-                for album in albums
-            ):
-                issues.append("invalid native albums")
-                albums = []
-            original = (data or {}).get("fileName", path.name)
-            if not isinstance(original, str) or not original:
-                original = path.name
-                issues.append("native original filename unavailable")
-            rows.append(
-                {
-                    "path": str(path),
-                    "name": path.name,
-                    "original_filename": original,
-                    "size": path.stat().st_size,
-                    "sha1": checksum,
-                    "capture_time": captured.isoformat() if captured else None,
-                    "metadata": expected,
-                    "issues": issues,
-                    "native_sidecar": True,
-                    "albums": sorted({album["title"] for album in albums}),
+                if captured is not None:
+                    captured = captured.astimezone(UTC)
+                if captured is not None and not selection[0] <= captured.date() <= selection[1]:
+                    warnings.append(
+                        "Outside requested dates; included in folder upload audit: " + str(path)
+                    )
+                if captured is None:
+                    issues.append(
+                        "capture time unavailable; filename/time matching cannot be assessed"
+                    )
+                checksum = hashes.checksums(path)["sha1"]
+                expected = {
+                    key: value
+                    for key, value in (data or {}).items()
+                    if key
+                    in {
+                        "dateTaken",
+                        "description",
+                        "latitude",
+                        "longitude",
+                        "favorited",
+                        "archived",
+                    }
                 }
-            )
+                _, unchecked, _ = compare(expected, {}, set())
+                issues.extend(note for note in unchecked if note.startswith("invalid sidecar"))
+                if data and data.get("tags"):
+                    issues.append("native tags are not checked")
+                albums = (data or {}).get("albums", [])
+                if not isinstance(albums, list) or any(
+                    not isinstance(album, dict)
+                    or not isinstance(album.get("title"), str)
+                    or not album["title"]
+                    for album in albums
+                ):
+                    issues.append("invalid native albums")
+                    albums = []
+                original = (data or {}).get("fileName", path.name)
+                if not isinstance(original, str) or not original:
+                    original = path.name
+                    issues.append("native original filename unavailable")
+                rows.append(
+                    {
+                        "path": str(path),
+                        "name": path.name,
+                        "original_filename": original,
+                        "size": path.stat().st_size,
+                        "sha1": checksum,
+                        "capture_time": captured.isoformat() if captured else None,
+                        "metadata": expected,
+                        "issues": issues,
+                        "native_sidecar": True,
+                        "albums": sorted({album["title"] for album in albums}),
+                    }
+                )
     return rows, warnings
 
 
