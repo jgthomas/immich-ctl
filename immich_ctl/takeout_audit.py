@@ -6,7 +6,8 @@ from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from immich_ctl.takeout import Coverage, FileKey, edited_original_path, inspect_archives, media_type
+from immich_ctl.archive_inspection import ArchiveInspection
+from immich_ctl.takeout import Coverage, FileKey, edited_original_path, media_type
 from immich_ctl.takeout_metadata import duplicate_album_titles
 
 
@@ -77,9 +78,12 @@ def numbered_media(coverage: Coverage) -> list[dict[str, Any]]:
     return rows
 
 
-def audit_report(paths: list[Path]) -> dict[str, Any]:
+def audit_report(
+    paths: list[Path], *, inspection: ArchiveInspection | None = None
+) -> dict[str, Any]:
     """Read ZIP names and metadata only; media contents are never opened."""
-    _, _, titles, _, warnings, _sidecars, coverage = inspect_archives(paths)
+    inspection = inspection if inspection is not None else ArchiveInspection(paths)
+    _, _, titles, _, warnings, _sidecars, coverage = inspection.get(paths)
     rows = numbered_media(coverage)
     associations = Counter(row["association"] for row in rows)
     years: defaultdict[str, Counter[str]] = defaultdict(Counter)
@@ -115,8 +119,9 @@ def audit(
     details: bool = False,
     json_output: bool = False,
     server_audit: dict[str, Any] | None = None,
+    inspection: ArchiveInspection | None = None,
 ) -> None:
-    report = audit_report(paths)
+    report = audit_report(paths, inspection=inspection)
     if server_audit is not None:
         report["server_audit"] = server_audit
     if json_output:

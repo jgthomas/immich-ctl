@@ -282,6 +282,11 @@ external-library assets are excluded. Trashed checksum matches are flagged becau
 they may prevent an active upload. Native sidecar omissions are reported as unverified
 when comparing existing metadata; the audit does not infer zero/false source values.
 
+Numbered-file and server-risk reports share one archive summary inspection per
+audit invocation. It is kept only in memory, checked against ZIP fingerprints
+before reuse, and rebuilt on the next command. Selected source sidecars and media
+are still read separately when needed for full metadata and checksum checks.
+
 ## Reconcile Takeout files with extracted folders
 
 ```bash

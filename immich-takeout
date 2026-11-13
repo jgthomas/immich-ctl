@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from immich_ctl.archive_inspection import ArchiveInspection
 from immich_ctl.collision_cache import default_directory
 from immich_ctl.companion_recover import recover_companions
 from immich_ctl.config import ConfigError, load_config
@@ -413,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise TakeoutError("Server comparison options require --config INI.")
             if not math.isfinite(args.timeout) or args.timeout <= 0:
                 raise TakeoutError("--timeout must be a positive finite number.")
+            inspection = ArchiveInspection(paths)
             if args.config:
                 server, key = load_config(args.config.expanduser())
                 server_audit = redact(
@@ -422,10 +424,17 @@ def main(argv: list[str] | None = None) -> int:
                         selection=args.date_range,
                         folders=args.extracted,
                         include_partner=args.include_partner,
+                        inspection=inspection,
                     ),
                     key,
                 )
-            audit(paths, details=args.details, json_output=args.json, server_audit=server_audit)
+            audit(
+                paths,
+                details=args.details,
+                json_output=args.json,
+                server_audit=server_audit,
+                inspection=inspection,
+            )
             return 0
         if args.action == "reconcile":
             reconcile(

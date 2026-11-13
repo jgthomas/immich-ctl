@@ -12,10 +12,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
+from immich_ctl.archive_inspection import ArchiveInspection
 from immich_ctl.folder_compat import JSON_LIMIT, sidecar_state
 from immich_ctl.folder_validate import Client, ValidationError, compare, inspect_folder, timestamp
 from immich_ctl.local_hashes import LocalHashes
-from immich_ctl.takeout import FileKey, google_photos_path, inspect_archives
+from immich_ctl.takeout import FileKey, google_photos_path
 from immich_ctl.takeout_metadata import duplicate_album_titles, expectation
 from immich_ctl.takeout_reconcile import source_rows
 
@@ -28,9 +29,14 @@ def sha1(stream: Any) -> str:
 
 
 def archive_inputs(
-    paths: list[Path], selection: tuple[date, date], include_partner: bool
+    paths: list[Path],
+    selection: tuple[date, date],
+    include_partner: bool,
+    *,
+    inspection: ArchiveInspection | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    _, memberships, titles, _, warnings, _sidecars, coverage = inspect_archives(paths)
+    inspection = inspection if inspection is not None else ArchiveInspection(paths)
+    _, memberships, titles, _, warnings, _sidecars, coverage = inspection.get(paths)
     sidecar_owners: defaultdict[str, set[Any]] = defaultdict(set)
     for owner, names in coverage.item_paths.items():
         for name in names:
@@ -464,12 +470,14 @@ def upload_audit(
     selection: tuple[date, date] | None = None,
     folders: list[Path] | None = None,
     include_partner: bool = False,
+    inspection: ArchiveInspection | None = None,
 ) -> dict[str, Any]:
+    inspection = inspection if inspection is not None else ArchiveInspection(paths)
     selection = selection or (date.min, date.max)
     inputs, warnings = (
         folder_inputs(folders, selection)
         if folders
-        else archive_inputs(paths, selection, include_partner)
+        else archive_inputs(paths, selection, include_partner, inspection=inspection)
     )
     report = server_report(inputs, client)
     # Archive candidates are regrouped by the Google Photos reader, so this
@@ -477,7 +485,7 @@ def upload_audit(
     if not folders:
         report["input_album_duplicates"] = []
         report["summary"]["input_album_duplicates"] = 0
-    source_collisions = duplicate_album_titles(inspect_archives(paths)[2]) if paths else []
+    source_collisions = duplicate_album_titles(inspection.get(paths)[2]) if paths else []
     relevant_titles = {title for row in inputs for title in row["albums"]}
     source_collisions = [c for c in source_collisions if c["title"] in relevant_titles]
     report["source_album_title_collisions"] = source_collisions
