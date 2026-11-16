@@ -14,6 +14,7 @@ Standalone scripts for Immich and Google Photos Takeout archives.
 - For extraction, recovery and upload: `immich-go` on PATH (tested with 0.32.0).
 - For `recover-companions` scanning/planning: `ffprobe` on PATH (from FFmpeg).
   Applying a saved plan does not require it; immich-go is not invoked.
+- For `immich-check-companions`: `ffprobe` on PATH; no server access is needed.
 - For development: [uv](https://docs.astral.sh/uv/).
 
 ## Migration runbook
@@ -93,7 +94,13 @@ Work on one account at a time; all server commands must use that account's INI.
      ./immich-repair-filetypes "$folder" --manifest "${folder}-filetypes.json" || break
      ./immich-repair-filenames "$folder" || break
    done
+   ./immich-check-companions "${folders[@]}" --json \
+     > "/tmp/immich-$trial_year-companions.json" \
+     2> "/tmp/immich-$trial_year-companions-progress.txt"
    ```
+
+   Review the [extracted companion check](#check-extracted-companion-metadata)
+   before uploading; it reports differences without changing sidecars.
 
 7. **Repeat reconciliation and audit the prepared upload folders.** Reuse the album
    mapping if one was created. Resolve or explicitly accept findings in both reports
@@ -413,6 +420,42 @@ invoke immich-go. Recovery contacts no server. Omit `--extracted` arguments for
 folders that do not exist. Include newly recovered folders in subsequent
 reconciliation, file-type/filename repair, upload-risk audits and validation;
 reapply any album-name mapping repairs before uploading.
+
+### Check extracted companion metadata
+
+Check videos already present in prepared folders against their identifier-matched
+stills and their own embedded dates/GPS:
+
+```bash
+./immich-check-companions /path/to/extracted-year /path/to/recovered-videos --json \
+  > /tmp/companion-check.json 2> /tmp/companion-check-progress.txt
+```
+
+- Accepts one or more folders; scans stills for embedded identifiers and matches
+  videos globally across those folders. Names and nearby dates never establish links.
+- Compares capture dates, GPS, descriptions, favourite/archive flags and full album
+  metadata. Multiple still copies combine albums only when their other metadata agrees.
+  Conflicts between stills or between a still and the video's embedded metadata remain
+  review findings. This checks local consistency, not preservation from Takeout or Immich.
+- Separates significant differences from small date/GPS offsets (up to two seconds
+  and 0.000051 degrees). Unsupported native fields are listed as unchecked.
+  Omitted local Go zero values are treated as defaults, as in local reconciliation.
+- Apple capture tags and standard MP4 `creation_time`/`location` tags (including video
+  stream tags) are inspected. Conflicting or invalid tags remain unverified, with their
+  values recorded in JSON. Container creation time can differ from capture time; this
+  uncertainty is a review finding, not an instruction to overwrite the capture date.
+- Videos without an identifier or a matching still remain unpaired; they may be
+  legitimate standalone videos. No albums or pairing links are inferred for them.
+  QuickTime/MP4 probing failures remain visible as errors rather than being skipped.
+- Default output is a summary; `--details` includes findings and `--json` includes
+  every video, matched stills, hashes and metadata comparisons. Progress goes to stderr;
+  JSON `differing_fields` counts each video once per field across both comparisons.
+  `--quiet` hides it. `--workers 1` to `8` controls concurrent probes (default: `4`).
+  Exit codes: `0` matched or within tolerance, `2` differences/unverified checks,
+  `1` operational failure, `130` interrupted.
+- Media and sidecars are unchanged; the private local checksum cache may update.
+  Stills must still be read to find identifiers. No ZIP scans or server requests occur.
+  Input changes during the scan abort the report; keep report files outside upload folders.
 
 ### Recover omitted companion videos
 

@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Check extracted videos against identifier-matched still metadata, read-only."""
+
+import sys
+
+from immich_ctl.companion_check import main
+
+if __name__ == "__main__":
+    sys.exit(main())

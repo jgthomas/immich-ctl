@@ -55,7 +55,7 @@ def local_files(folders: list[Path]) -> tuple[set[str], list[dict[str, Any]]]:
     return existing, stills
 
 
-def probe(path: Path, binary: str) -> dict[str, Any]:
+def probe(path: Path, binary: str, *, include_standard: bool = False) -> dict[str, Any]:
     """Only local QuickTime/MP4 inputs are accepted; never follow network URLs."""
     try:
         result = subprocess.run(
@@ -68,7 +68,8 @@ def probe(path: Path, binary: str) -> dict[str, Any]:
                 "-format_whitelist",
                 "mov",
                 "-show_entries",
-                "format=format_name,duration:format_tags:stream=codec_type",
+                "format=format_name,duration:format_tags:stream=codec_type"
+                + (":stream_tags" if include_standard else ""),
                 "-of",
                 "json",
                 str(path),
@@ -98,6 +99,10 @@ def probe(path: Path, binary: str) -> dict[str, Any]:
         not isinstance(identifier, str) or not UUID.fullmatch(identifier.encode())
     ):
         raise ValueError("Invalid Live Photo identifier")
+    if include_standard:
+        from immich_ctl.video_metadata import checker_metadata
+
+        return checker_metadata(tags, data["streams"], identifier)
     captured = timestamp(tags.get("com.apple.quicktime.creationdate"))
     coordinates = None
     location = tags.get("com.apple.quicktime.location.ISO6709")
