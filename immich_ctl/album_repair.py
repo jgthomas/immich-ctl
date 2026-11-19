@@ -1,4 +1,4 @@
-"""Separate duplicate Takeout album titles using their source album dates (UTC)."""
+"""Separate duplicate Takeout album titles using dates or numbered directory suffixes."""
 
 import argparse
 import json
@@ -8,7 +8,7 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
-from immich_ctl.album_names import dated_names
+from immich_ctl.album_names import dated_names, numbered_names
 from immich_ctl.folder_compat import JSON_LIMIT, native_sidecar_issues
 from immich_ctl.folder_repair import (
     Change,
@@ -30,6 +30,7 @@ def repair(
     *,
     titles: set[str] | None = None,
     dry_run: bool = False,
+    numbered_suffix: bool = False,
 ) -> None:
     archives = sorted({p.expanduser().resolve() for p in archives})
     folders = sorted({p.expanduser().resolve() for p in folders})
@@ -42,7 +43,8 @@ def repair(
     ):
         raise RepairError("The mapping must be outside the extracted folders and source ZIPs.")
     _, _, source_titles, _, _, _, coverage = inspect_archives(archives)
-    mapping = dated_names(coverage, source_titles, titles)
+    build = numbered_names if numbered_suffix else dated_names
+    mapping = build(coverage, source_titles, titles)
     if not mapping:
         raise RepairError("No duplicate album titles found.")
     expected_mapping = (json.dumps(mapping, ensure_ascii=True, indent=2) + "\n").encode()
@@ -175,6 +177,11 @@ def main(argv: list[str] | None = None) -> int:
         "--title", action="append", help="Only this duplicate title; repeat as needed"
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--numbered-suffix",
+        action="store_true",
+        help="Keep the unnumbered title and use _N for Takeout directories ending in (N)",
+    )
     args = parser.parse_args(argv)
     try:
         repair(
@@ -183,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
             args.mapping,
             titles=set(args.title) if args.title else None,
             dry_run=args.dry_run,
+            numbered_suffix=args.numbered_suffix,
         )
     except (RepairError, ValidationError, ValueError, OSError, zipfile.BadZipFile) as error:
         print(f"Error: {error}", file=sys.stderr)

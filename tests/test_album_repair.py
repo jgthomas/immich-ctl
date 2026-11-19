@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
@@ -87,6 +88,102 @@ class AlbumRepairTests(unittest.TestCase):
     def snapshot(self):
         return {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
 
+    def numbered_entries(self):
+        entries = {}
+        for path, value in self.entries.items():
+            directory, name = path.split("/", 1)
+            target = "Trip" if directory == "First" else "Trip(1)"
+            if name == "metadata.json":
+                value = dict(value, date={"timestamp": "1672531200"})
+            entries[f"{target}/{name}"] = value
+        return entries
+
+    def test_numbered_suffix_preserves_base_title_when_album_dates_match(self):
+        write_zip(self.archive, self.numbered_entries())
+        before = self.snapshot()
+        code, _, err = self.invoke("--numbered-suffix", "--dry-run")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.snapshot(), before)
+        code, _, err = self.invoke("--numbered-suffix")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            json.loads(self.mapping.read_text()), {"Trip": "Trip", "Trip(1)": "Trip_1"}
+        )
+        self.assertEqual(self.native[0].read_bytes(), before[str(self.native[0])])
+        expected = json.loads(before[str(self.native[1])])
+        expected["albums"][0]["title"] = "Trip_1"
+        self.assertEqual(json.loads(self.native[1].read_bytes()), expected)
+        report = reconcile_report([self.archive], [self.folder], SELECTION, album_map=self.mapping)
+        self.assertTrue(report["metadata_and_albums_validated"])
+        self.assertEqual(report["source_album_title_collisions"], [])
+
+    def test_numbered_suffix_collision_prevents_all_writes(self):
+        entries = self.numbered_entries()
+        entries["Existing/metadata.json"] = {"title": "Trip_1"}
+        write_zip(self.archive, entries)
+        before = self.snapshot()
+        code, _, err = self.invoke("--numbered-suffix")
+        self.assertEqual(code, 1)
+        self.assertIn("does not uniquely distinguish", err)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.mapping.exists())
+
+    def test_numbered_suffix_rejects_conflicting_or_unreadable_album_metadata(self):
+        entries = self.numbered_entries()
+        write_zip(self.archive, entries)
+        second = self.root / "part-two.zip"
+        variants = (
+            dict(entries["Trip(1)/metadata.json"], date={"timestamp": "1672617600"}),
+            b'{ "title": "Trip",',
+        )
+        for metadata in variants:
+            with self.subTest(metadata=metadata):
+                write_zip(second, {"Trip(1)/metadata.json": metadata})
+                before = self.snapshot()
+                code, _, err = self.invoke("--numbered-suffix", second)
+                self.assertEqual(code, 1)
+                self.assertIn("Missing or conflicting album metadata: Trip(1)", err)
+                self.assertEqual(self.snapshot(), before)
+                self.assertFalse(self.mapping.exists())
+
+    def test_reconcile_accepts_a_combined_numbered_and_dated_map(self):
+        entries = self.numbered_entries()
+        for index, directory in enumerate(("First", "Second")):
+            name = f"other{index}.jpg"
+            metadata = self.entries[f"{directory}/metadata.json"]
+            entries[f"{directory}/metadata.json"] = dict(metadata, title="Other")
+            media = self.folder / name
+            media.write_bytes(name.encode())
+            entries[f"{directory}/{name}"] = name.encode()
+            entries[f"{directory}/{name}.json"] = sidecar(name, "other-" + directory)
+            native = json.loads(self.native[index].read_bytes())
+            native["fileName"] = name
+            native["albums"][0]["title"] = "Other"
+            media.with_name(name + ".JSON").write_text(json.dumps(native))
+        write_zip(self.archive, entries)
+        with zipfile.ZipFile(self.archive, "a") as archive:
+            archive.writestr("Takeout/archive_browser.html", b"Takeout index")
+        code, _, err = self.invoke("--numbered-suffix", "--title", "Trip")
+        self.assertEqual(code, 0, err)
+        numbered = json.loads(self.mapping.read_bytes())
+        self.mapping.unlink()
+        code, _, err = self.invoke("--title", "Other")
+        self.assertEqual(code, 0, err)
+        combined = numbered | json.loads(self.mapping.read_bytes())
+        self.mapping.write_text(json.dumps(combined))
+        report = reconcile_report([self.archive], [self.folder], SELECTION, album_map=self.mapping)
+        self.assertTrue(report["metadata_and_albums_validated"])
+        self.assertEqual(report["source_album_title_collisions"], [])
+
+        # A valid group in isolation can still conflict with an untouched album.
+        entries["Existing/metadata.json"] = {"title": "Trip_1"}
+        write_zip(self.archive, entries)
+        _, _, titles, _, _, _, coverage = inspect_archives([self.archive])
+        before = copy.deepcopy((coverage, titles))
+        with self.assertRaisesRegex(ValueError, "collide"):
+            apply_names(self.mapping, coverage, titles)
+        self.assertEqual((coverage, titles), before)
+
     def test_preview_repair_reconciliation_and_idempotence(self):
         before = self.snapshot()
         code, out, err = self.invoke("--dry-run", "--title", "Trip")
@@ -158,7 +255,7 @@ class AlbumRepairTests(unittest.TestCase):
 
     def test_unknown_bytes_missing_memberships_or_changed_metadata_stop_entire_plan(self):
         original = self.native[1].read_bytes()
-        for problem in ("bytes", "metadata", "missing", "extra"):
+        for problem in ("bytes", "metadata", "missing", "extra", "unexpected_album_field"):
             with self.subTest(problem=problem):
                 (self.folder / "photo1.jpg").write_bytes(b"Second")
                 data = json.loads(original)
@@ -168,8 +265,10 @@ class AlbumRepairTests(unittest.TestCase):
                     data["albums"][0]["description"] = "wrong narrative"
                 elif problem == "missing":
                     data["albums"] = []
-                else:
+                elif problem == "extra":
                     data["albums"].append({"title": "Trip"})
+                else:
+                    data["albums"][0]["custom"] = "not in source"
                 self.native[1].write_text(json.dumps(data))
                 before = self.snapshot()
                 code, _, _ = self.invoke()
@@ -188,6 +287,31 @@ class AlbumRepairTests(unittest.TestCase):
         before = self.snapshot()
         self.assertEqual(self.invoke()[0], 1)
         self.assertEqual(self.snapshot(), before)
+
+    def test_malformed_album_list_stops_numbered_repair_before_writes(self):
+        write_zip(self.archive, self.numbered_entries())
+        data = json.loads(self.native[0].read_bytes())
+        for albums in ({}, [{"title": None}], ["Trip"]):
+            with self.subTest(albums=albums):
+                self.native[0].write_text(json.dumps(dict(data, albums=albums)))
+                before = self.snapshot()
+                code, _, err = self.invoke("--numbered-suffix")
+                self.assertEqual(code, 1)
+                self.assertIn("Invalid native albums", err)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_numbered_repair_ignores_nonmedia_in_source_album(self):
+        entries = self.numbered_entries()
+        entries["Trip/unrelated.bin"] = b"unrelated picture"
+        write_zip(self.archive, entries)
+        (self.folder / "unrelated.jpg").write_bytes(b"unrelated picture")
+        side = self.folder / "unrelated.jpg.JSON"
+        native = json.loads(self.native[0].read_bytes())
+        side.write_text(json.dumps(dict(native, fileName="unrelated.jpg", albums=[])))
+        before = side.read_bytes()
+        code, _, err = self.invoke("--numbered-suffix")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(side.read_bytes(), before)
 
     def test_selected_title_group_ignores_other_groups_and_preserves_source_metadata(self):
         for directory, timestamp in (("Third", "1672704000"), ("Fourth", "1672790400")):

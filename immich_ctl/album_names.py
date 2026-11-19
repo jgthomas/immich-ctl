@@ -1,12 +1,48 @@
-"""Explicit, source-verified dated names for colliding Takeout albums."""
+"""Source-verified names for colliding Takeout albums."""
 
 import json
+import re
 from pathlib import Path
 
 from immich_ctl.folder_compat import JSON_LIMIT
 from immich_ctl.folder_repair import RepairError, invalid_constant, unique_object
 from immich_ctl.takeout import Coverage, capture_time
 from immich_ctl.takeout_metadata import duplicate_album_titles
+
+
+def numbered_names(
+    coverage: Coverage, titles: dict[str, str], selected: set[str] | None = None
+) -> dict[str, str]:
+    """Keep the unnumbered title and turn Takeout's directory suffix into _N."""
+    mapping = {}
+    collisions = duplicate_album_titles(titles)
+    if selected is not None and selected - {c["title"] for c in collisions}:
+        raise ValueError("Requested title is not a duplicate source album title.")
+    for collision in collisions:
+        title = collision["title"]
+        if selected is not None and title not in selected:
+            continue
+        directories = collision["source_directories"]
+        if title not in directories:
+            raise ValueError("Numbered names require an unnumbered source directory: " + title)
+        for directory in directories:
+            if len(coverage.album_metadata.get(directory, [])) != 1 or (
+                directory in coverage.invalid_album_metadata
+            ):
+                raise ValueError("Missing or conflicting album metadata: " + directory)
+            if directory == title:
+                mapping[directory] = title
+                continue
+            match = re.fullmatch(re.escape(title) + r"\(([1-9][0-9]*)\)", directory)
+            if match is None:
+                raise ValueError(
+                    "Source directory has no unambiguous numbered suffix: " + directory
+                )
+            mapping[directory] = f"{title}_{match[1]}"
+    final = [mapping.get(d, title or d) for d, title in titles.items()]
+    if any(final.count(name) != 1 for name in mapping.values()):
+        raise ValueError("Numbered suffix does not uniquely distinguish the albums.")
+    return dict(sorted(mapping.items()))
 
 
 def dated_names(
@@ -52,10 +88,27 @@ def apply_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[
         or not mapping
         or any(not isinstance(v, str) or d not in titles for d, v in mapping.items())
     ):
-        raise ValueError("Invalid album mapping; expected source directories and dated titles.")
+        raise ValueError("Invalid album mapping; expected source directories and titles.")
     selected = {titles[d] or d for d in mapping}
-    if mapping != dated_names(coverage, titles, selected):
-        raise ValueError("Album mapping does not match the source album dates and directories.")
+    validated: dict[str, str] = {}
+    for collision in duplicate_album_titles(titles):
+        if collision["title"] not in selected:
+            continue
+        group = {d: titles[d] for d in collision["source_directories"]}
+        proposed = {d: mapping[d] for d in group if d in mapping}
+        for build in (dated_names, numbered_names):
+            try:
+                expected = build(coverage, group)
+            except ValueError:
+                continue
+            if proposed == expected:
+                validated.update(expected)
+                break
+    if mapping != validated:
+        raise ValueError("Album mapping does not match the source album dates or directories.")
+    final = [mapping.get(d, title or d) for d, title in titles.items()]
+    if any(final.count(name) != 1 for name in mapping.values()):
+        raise ValueError("Album mapping would collide with another album title.")
     for directory, name in mapping.items():
         titles[directory] = name
         coverage.album_metadata[directory] = [

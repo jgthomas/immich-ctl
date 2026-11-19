@@ -327,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--album-map",
                 type=Path,
                 metavar="JSON",
-                help="Source-verified dated album mapping from immich-repair-album-names",
+                help="Source-verified album mapping from immich-repair-album-names",
             )
             sub.add_argument(
                 "--extracted",

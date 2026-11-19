@@ -598,6 +598,9 @@ Append each source album's UTC date to duplicate titles in extracted JSON:
 Remove `--dry-run` to apply. Repeat `--title`, or omit it to handle all duplicate
 titles. Suffixes use the source album metadata's `date`, not photo capture dates.
 Missing dates, colliding dated names or uncertain memberships stop all writes.
+For exports with same-day albums in folders such as `Trip` and `Trip(1)`, add
+`--numbered-suffix` to keep `Trip` and name the second album `Trip_1`.
+The numbered names must be unique across the export.
 Membership is established by matching media bytes to source album directories.
 Only album titles change; media and other sidecar values are preserved. Existing
 matching repairs are left untouched. Each sidecar update is atomic; an interrupted
@@ -611,7 +614,7 @@ Keep the mapping outside upload folders and reuse it when reconciling:
   --album-map /path/to/album-names.json ~/Downloads/takeout-EXPORT-*.zip
 ```
 
-The mapping is checked against the original source directories and album dates.
+The mapping is checked against the original source directories and the chosen naming convention.
 This script makes no server requests and does not rename existing Immich albums.
 Reapply it after re-extraction or additional recovery, then audit prepared folders.
 
