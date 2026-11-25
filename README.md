@@ -585,6 +585,27 @@ This removes stored-name aliases, not duplicate images. Matching basenames in ot
 folders or on the server can still collide: rerun reconciliation and the upload-risk
 audit after repair. It does not repair metadata already uploaded to Immich.
 
+### Consolidate byte-identical album copies
+
+After aligning filenames, preview which redundant copies can move out of an
+extraction:
+
+```bash
+./immich-repair-duplicates "$normal_extract" --dry-run
+```
+
+The command checks checksum groups that carry album memberships. It retains a
+copy with every album payload in the group that passes immich-go's default path
+exclusions and the local filename and capture-time collision check. Other sidecar
+fields must agree, apart from `fileName`. Groups with conflicting metadata, split
+memberships or no suitable keeper require manual review. Use reconciliation to
+verify memberships against Takeout.
+
+Remove `--dry-run` to move redundant media and their JSON sidecars into the new
+sibling folder `${normal_extract}-duplicate-backup`, with a manifest. The command
+checks the moved bytes against the plan and restores the files on a mismatch.
+Keep the backup outside the upload inputs and rerun the upload audit after applying.
+
 ### Separate duplicate album names
 
 Append each source album's UTC date to duplicate titles in extracted JSON:
