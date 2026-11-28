@@ -330,6 +330,57 @@ are still read separately when needed for full metadata and checksum checks.
   operational errors return `1`. These are local extraction checks; use the validator
   below to check Immich after upload.
 
+## Snapshot assets and album memberships
+
+```bash
+./immich-snapshot --config "$config" --output-dir /path/to/snapshots
+```
+
+Use an existing writable directory on a filesystem that supports hard links
+for atomic publication. The command checks this before contacting Immich
+and prints the path to a new UTC-timestamped JSON file. It needs
+`user.read`, `asset.read`, `album.read` and `stack.read`, and uses the
+cursor-based metadata search introduced in Immich 3.2. It downloads no media.
+
+The manifest records asset IDs and server-reported SHA-1 checksums as lowercase
+hex, including owned assets without albums. It covers timeline, archived,
+hidden and trashed assets visible to the API key. It records each accessible
+album by ID, including empty albums, shared albums and albums with the same
+name. Album `users` entries preserve each user ID and role, including the
+owner, when Immich provides them. The asset's `original_filename` and
+`file_created_at` retain Immich's filename and capture timestamp for
+comparison. `live_photo_video_id` records the link from a still to its motion
+asset. Each album also records its `description` and `cover_asset_id`.
+The `stacks` list records the configured account's stack IDs, member asset
+IDs and primary asset IDs. Owned assets carry `is_favorite`, which is null
+when Immich does not report it. The flag is also null for assets owned by
+someone else because Immich masks their favorite state.
+Unavailable fields are recorded as null. Shared album members
+whose checksums are withheld retain their IDs with
+`checksum: null`. The `checksum_kind` field identifies content hashes,
+external-library hashes, unverified hashes and unavailable hashes. Immich can
+derive external-library hashes from file paths. Locked assets require elevated
+access outside this API-key workflow. Only detected inconsistencies can trigger
+a retry, so take snapshots while uploads and album edits are idle.
+
+**Phone-sync reconciliation.** After completing a bulk import, such as a
+Google Photos Takeout migration, take a baseline snapshot before enabling
+phone sync. Take a second snapshot after sync settles. Compare asset IDs,
+checksums and album memberships to identify new uploads, byte-identical
+duplicates and membership changes.
+
+**Backup and restore.** Store a fresh snapshot alongside each
+`immich-archiver` backup. The archive sidecars carry the source asset IDs. After
+re-uploading the archive, match checksums marked `content` to the destination
+asset IDs before rebuilding the albums from the manifest. Other checksum kinds
+need independent file verification. Check archive coverage before a
+restore, especially for shared and trashed assets. Restoring access requires
+mapping the recorded user IDs to destination accounts. Public sharing links
+are outside the snapshot's scope. Remap both ends of each Live Photo link,
+album covers and stack members to destination asset IDs. Those source IDs
+remain in the manifest even if the assets they reference fall outside the
+snapshot scope.
+
 ## Create an album and add existing photos
 
 Use exact asset UUIDs, as positional arguments or a whitespace-separated text file:
