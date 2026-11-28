@@ -71,8 +71,8 @@ def dated_names(
     return dict(sorted(mapping.items()))
 
 
-def apply_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[str, str]:
-    """Validate a mapping against this export before altering in-memory expectations."""
+def read_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[str, str]:
+    """Read generated names or explicitly approved names for complete title groups."""
     with path.expanduser().open("rb") as stream:
         payload = stream.read(JSON_LIMIT + 1)
     if len(payload) > JSON_LIMIT:
@@ -83,6 +83,13 @@ def apply_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[
         )
     except RepairError as error:
         raise ValueError(str(error)) from error
+    explicit = (
+        isinstance(mapping, dict)
+        and set(mapping) == {"names"}
+        and isinstance(mapping["names"], dict)
+    )
+    if explicit:
+        mapping = mapping["names"]
     if (
         not isinstance(mapping, dict)
         or not mapping
@@ -96,6 +103,18 @@ def apply_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[
             continue
         group = {d: titles[d] for d in collision["source_directories"]}
         proposed = {d: mapping[d] for d in group if d in mapping}
+        if explicit:
+            if proposed.keys() != group.keys() or any(
+                len(coverage.album_metadata.get(d, [])) != 1
+                or d in coverage.invalid_album_metadata
+                or not proposed[d].strip()
+                for d in group
+            ):
+                raise ValueError(
+                    "Explicit album names require complete groups with valid metadata."
+                )
+            validated.update(proposed)
+            continue
         for build in (dated_names, numbered_names):
             try:
                 expected = build(coverage, group)
@@ -107,8 +126,18 @@ def apply_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[
     if mapping != validated:
         raise ValueError("Album mapping does not match the source album dates or directories.")
     final = [mapping.get(d, title or d) for d, title in titles.items()]
-    if any(final.count(name) != 1 for name in mapping.values()):
+    if explicit:
+        final = [name.strip().casefold() for name in final]
+    if any(
+        final.count(name.strip().casefold() if explicit else name) != 1 for name in mapping.values()
+    ):
         raise ValueError("Album mapping would collide with another album title.")
+    return validated
+
+
+def apply_names(path: Path, coverage: Coverage, titles: dict[str, str]) -> dict[str, str]:
+    """Validate a mapping against this export before altering in-memory expectations."""
+    mapping = read_names(path, coverage, titles)
     for directory, name in mapping.items():
         titles[directory] = name
         coverage.album_metadata[directory] = [

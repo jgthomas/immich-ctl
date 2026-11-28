@@ -128,6 +128,52 @@ class AlbumRepairTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertFalse(self.mapping.exists())
 
+    def test_explicit_names_keep_unrelated_memberships_and_reconcile(self):
+        other = {"title": "Dog fail", "description": "Keep this membership"}
+        entries = dict(self.entries)
+        entries["Dog fail/metadata.json"] = {
+            "title": other["title"],
+            "enrichments": [{"narrativeEnrichment": {"text": other["description"]}}],
+        }
+        entries["Dog fail/photo1.jpg"] = entries["Second/photo1.jpg"]
+        entries["Dog fail/photo1.jpg.json"] = entries["Second/photo1.jpg.json"]
+        write_zip(self.archive, entries)
+        data = json.loads(self.native[1].read_bytes())
+        data["albums"].append(other)
+        self.native[1].write_text(json.dumps(data))
+        self.mapping.write_text(json.dumps({"names": {"First": "trip", "Second": "trip_1"}}))
+        before = self.snapshot()
+        code, out, err = self.invoke("--use-mapping", "--dry-run")
+        self.assertEqual(code, 0, err)
+        self.assertIn("sidecars would update: 2", out)
+        self.assertEqual(self.snapshot(), before)
+
+        code, _, err = self.invoke("--use-mapping")
+        self.assertEqual(code, 0, err)
+        for sidecar_path, title in zip(self.native, ("trip", "trip_1"), strict=True):
+            expected = json.loads(before[str(sidecar_path)])
+            expected["albums"][0]["title"] = title
+            self.assertEqual(json.loads(sidecar_path.read_bytes()), expected)
+        self.assertEqual(self.mapping.read_bytes(), before[str(self.mapping)])
+        report = reconcile_report([self.archive], [self.folder], SELECTION, album_map=self.mapping)
+        self.assertTrue(report["metadata_and_albums_validated"])
+        after = self.snapshot()
+        self.assertEqual(self.invoke("--use-mapping")[0], 0)
+        self.assertEqual(self.snapshot(), after)
+
+    def test_explicit_names_reject_incomplete_groups_and_case_collisions(self):
+        for names, error in (
+            ({"First": "trip"}, "complete groups"),
+            ({"First": "trip", "Second": "TRIP"}, "collide"),
+        ):
+            with self.subTest(names=names):
+                self.mapping.write_text(json.dumps({"names": names}))
+                before = self.snapshot()
+                code, _, err = self.invoke("--use-mapping")
+                self.assertEqual(code, 1)
+                self.assertIn(error, err)
+                self.assertEqual(self.snapshot(), before)
+
     def test_numbered_suffix_rejects_conflicting_or_unreadable_album_metadata(self):
         entries = self.numbered_entries()
         write_zip(self.archive, entries)

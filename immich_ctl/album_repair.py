@@ -8,7 +8,7 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
-from immich_ctl.album_names import dated_names, numbered_names
+from immich_ctl.album_names import dated_names, numbered_names, read_names
 from immich_ctl.folder_compat import JSON_LIMIT, native_sidecar_issues
 from immich_ctl.folder_repair import (
     Change,
@@ -31,6 +31,7 @@ def repair(
     titles: set[str] | None = None,
     dry_run: bool = False,
     numbered_suffix: bool = False,
+    use_mapping: bool = False,
 ) -> None:
     archives = sorted({p.expanduser().resolve() for p in archives})
     folders = sorted({p.expanduser().resolve() for p in folders})
@@ -44,11 +45,15 @@ def repair(
         raise RepairError("The mapping must be outside the extracted folders and source ZIPs.")
     _, _, source_titles, _, _, _, coverage = inspect_archives(archives)
     build = numbered_names if numbered_suffix else dated_names
-    mapping = build(coverage, source_titles, titles)
+    mapping = (
+        read_names(mapping_file, coverage, source_titles)
+        if use_mapping
+        else build(coverage, source_titles, titles)
+    )
     if not mapping:
         raise RepairError("No duplicate album titles found.")
     expected_mapping = (json.dumps(mapping, ensure_ascii=True, indent=2) + "\n").encode()
-    if mapping_file.exists() and mapping_file.read_bytes() != expected_mapping:
+    if not use_mapping and mapping_file.exists() and mapping_file.read_bytes() != expected_mapping:
         raise RepairError("Existing mapping differs; choose a new --mapping path.")
     old_titles = {source_titles[d] or d for d in mapping}
     source_albums = {
@@ -147,7 +152,7 @@ def repair(
             + json.dumps(sorted(set(unresolved)))
         )
     if not dry_run:
-        if not mapping_file.exists():
+        if not use_mapping and not mapping_file.exists():
             with mapping_file.open("xb") as stream:
                 mapping_file.chmod(0o600)
                 stream.write(expected_mapping)
@@ -177,12 +182,20 @@ def main(argv: list[str] | None = None) -> int:
         "--title", action="append", help="Only this duplicate title; repeat as needed"
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument(
+    strategy = parser.add_mutually_exclusive_group()
+    strategy.add_argument(
         "--numbered-suffix",
         action="store_true",
         help="Keep the unnumbered title and use _N for Takeout directories ending in (N)",
     )
+    strategy.add_argument(
+        "--use-mapping",
+        action="store_true",
+        help="Use the names in an existing --mapping file",
+    )
     args = parser.parse_args(argv)
+    if args.use_mapping and args.title:
+        parser.error("--title cannot be combined with --use-mapping")
     try:
         repair(
             args.archives,
@@ -191,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             titles=set(args.title) if args.title else None,
             dry_run=args.dry_run,
             numbered_suffix=args.numbered_suffix,
+            use_mapping=args.use_mapping,
         )
     except (RepairError, ValidationError, ValueError, OSError, zipfile.BadZipFile) as error:
         print(f"Error: {error}", file=sys.stderr)

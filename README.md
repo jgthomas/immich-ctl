@@ -622,6 +622,9 @@ Missing dates, colliding dated names or uncertain memberships stop all writes.
 For exports with same-day albums in folders such as `Trip` and `Trip(1)`, add
 `--numbered-suffix` to keep `Trip` and name the second album `Trip_1`.
 The numbered names must be unique across the export.
+To choose the titles yourself, put every source directory in the duplicate title
+group in a JSON object such as `{"names":{"Trip":"Summer Trip","Trip(1)":"Winter Trip"}}`.
+Pass that file as `--mapping` and add `--use-mapping` to the repair command.
 Membership is established by matching media bytes to source album directories.
 Only album titles change; media and other sidecar values are preserved. Existing
 matching repairs are left untouched. Each sidecar update is atomic; an interrupted
@@ -635,7 +638,8 @@ Keep the mapping outside upload folders and reuse it when reconciling:
   --album-map /path/to/album-names.json ~/Downloads/takeout-EXPORT-*.zip
 ```
 
-The mapping is checked against the original source directories and the chosen naming convention.
+The mapping is checked against the original source directories and must give each
+mapped album a distinct title across the export.
 This script makes no server requests and does not rename existing Immich albums.
 Reapply it after re-extraction or additional recovery, then audit prepared folders.
 
